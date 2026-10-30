@@ -131,7 +131,7 @@ python3 scripts/backtest_unique_top_board.py --start 20260701 --end 20261020 --t
 
 ## 版本与更新日志
 
-当前版本 **v1.1.1**（与 `SKILL.md` 的 `version:` 字段一致）。逐版变更见 [CHANGELOG.md](CHANGELOG.md)，
+当前版本 **v1.1.2**（与 `SKILL.md` 的 `version:` 字段一致）。逐版变更见 [CHANGELOG.md](CHANGELOG.md)，
 每个版本对应一个 [Release](https://github.com/sysean/dragon-head-tactics/releases)。
 
 ## 许可
