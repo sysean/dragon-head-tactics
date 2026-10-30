@@ -1,7 +1,7 @@
 ---
 name: yz-dragon-head-tactics
 description: Use when 问龙头战法/游资手法/打板回测。含分歧买点、情绪周期、游资席位画像、唯一最高标回测。
-version: 1.1.5
+version: 1.1.6
 author: Hermes Agent
 license: MIT
 metadata:
@@ -49,6 +49,11 @@ A 股短线「龙头战法」的总纲：各代顶级游资的共识与分歧、
 - 「把龙头战法回测一下 / 只要买唯一最高标能做到多少钱 / 这套打法胜率多少 / 从某日到现在复盘一遍」
 
 不适用：纯基本面与财报分析、中长线配置、非 A 股市场。
+
+**规则变更纪律（sean_yang 定，优先级最高）**：开仓/空仓阈值（竞价红盘 ≥40% 且中位 >0）、单票仓位上限、买点区间、档位定义这类**他定过的参数**，只许「报证据 + 提建议」，**不许在回测/推演里自行改掉再继续算**。
+- 回测跑出「现行阈值反向」这种结论时，正确写法是「数据观察（只记录，不据此改规则）」，原规则原文保留，改动单独提出来等他点头（原话：「这个你别擅自改」）。
+- 同理：不许把「窗口内没有 X 就空仓」这类硬门槛当成自己的发明写进规则；开不开仓只由现行档位标准决定，选票规则只决定「买谁 + 多少仓位」。
+- 一次会话里既做研究又改规则、且没有单独确认的，等于越权——v1.1.3 就是这幺被退回的。
 
 配套数据口径（涨停/连板/龙虎榜字段与坑）见 skill `a-share-limit-up-speed`；本 skill 讲**交易体系**
 与**游资席位画像**。数据源一律 Tushare Pro，不引第三方行情源（实时价用 `rt_min`）。
@@ -412,6 +417,9 @@ A 股短线「龙头战法」的总纲：各代顶级游资的共识与分歧、
 
 **选票优先级（每一层都要过龙头五要素）**：① 高度龙在窗口内 → 它；② 情绪龙二波在低吸区间 → 它；③ 都不成立 → 按板位降序在承接位里取第一只，仓位降到最小档。
 
+**三池串联的实测（20260730–20261028，每天最多 1 只，买入=开盘价、卖=T+1 收盘）**：14 笔、胜率 42.9%、平均 −1.76%、等权复利 0.757。分池：高度龙 0 笔（15 个开仓日里唯一最高标只有 1 天在 3–7% 窗口，且当天同行业跟风票低开为负）、情绪龙二波 7 笔 43%/−2.80%、承接位 7 笔 43%/−0.72%。
+**关键反直觉**：二波池单独跑全区间是 32 笔 53.1%/+1.08%，但只取「档位放行日」就剩 7 笔 43%/−2.80% —— 二波低吸的优势集中在**竞价弱势日**，而档位把这部分滤掉了。档位是 sean_yang 定的开仓条件，不许改；这条只作记录。
+
 **一字门槛对高位龙头同样生效（可执行性优先于一切）**：
 
 - **一字开盘 = 竞价买不到**；排板只会增加封单，不是参与。
@@ -574,6 +582,17 @@ python3 scripts/calibrate_board_volume.py --start 20260801 --end 20261029
 python3 scripts/calibrate_board_volume.py --start 20260401 --end 20261029   # 换区间重校
 ```
 
+- `scripts/backtest_925_selection.py` —— **9:25 选票标准的可算版回测**（§4.5 的回测就是它）：
+  档位 → 唯一最高标读数 → 3–7% 窗口 → 开盘价成交、T+1 收盘卖；排序固定为「唯一最高标 → 板位 → 同题材最高板 → 自由换手 → 高开」，
+  并输出质量分档 A/B/C/D 与 `--variants` 四口径对照。`--pool fanbao` 切到**情绪龙二波池**（断板反包首板，买点区间用 `--gap-lo/--gap-hi` 调，默认 −3%~+3%）。
+  缓存缺失时 `--fetch` 自动补 `daily` / `stk_limit` / `daily_basic`；`limit_list_d` 走 `~/.hermes/cache/limitpool/lim_U_{date}.pkl`。
+
+```bash
+python3 scripts/backtest_925_selection.py --start 20260730 --end 20261028 --trades --variants
+python3 scripts/backtest_925_selection.py --pool fanbao --trades                  # 二波低吸口径
+python3 scripts/backtest_925_selection.py --pool fanbao --gap-lo 3 --gap-hi 7      # 同池换成高开口径作对照
+```
+
 数据源一律 Tushare Pro（sean_yang 2026-10-10 定），本机 `tushare 1.4.29` 装在 `/usr/local/bin/python3`。
 
 ## 十、盘后定标的：把「该做哪只」落成明日预案
@@ -731,7 +750,7 @@ python3 scripts/first_board_auction.py --mode today --top 18      # 9:25 之后�
 
 ## 十三、每日推送与 18:00 数据可用性
 
-本 skill 的落地出口是两个定时任务：**盘前 9:25 扫描**（昨日情绪/梯队/席位 + 今日竞价读数 + 今天做不做）与**盘后 18:00 复盘**（今日情绪/晋级率/梯队/席位 + 明日候选池）。
+本 skill 的落地出口是两个定时任务：**盘前 9:25 扫描**（昨日情绪/梯队/席位 + **情绪龙二波池** + 今日竞价读数 + 三池选票：高度龙 → 二波低吸 → 承接位）与**盘后 18:00 复盘**（今日情绪/晋级率/梯队/席位 + 明日候选池）。
 
 cron 表达式、数据脚本路径、飞书卡片规格、群 id 这些**本机部署细节记在 `references/local-ops.md`，该文件不随公开版发布**（repo 里只放 skill 本身，不放本机运维配置）。
 
@@ -759,7 +778,7 @@ cron 表达式、数据脚本路径、飞书卡片规格、群 id 这些**本机
 - **榜单去重**：同一 (代码, 席位, 方向, 上榜原因) 会因多个上榜原因重复，汇总前按 `(trade_date, ts_code, exalter, side, reason)` 去重，否则金额翻几倍。
 - **`top_inst.side`：0=买方榜、1=卖方榜**；东财拉萨系席位常两榜同现。
 - **龙虎榜是盘后数据**（当日约 18:00 后）；盘中只能靠 `kpl_list` / `limit_list_d`，盘中查不到席位 ≠ 没参与。
-- **金额单位**：`top_inst` / `top_list` / `limit_list_d` / `kpl_list` 是**元**；`daily_basic` / `moneyflow_dc` 是**万元/万股**（`limit_list_d.float_mv` 也是元，除以 1e8 才是亿）。**`ts.realtime_quote` 的 `AMOUNT` 也是元**（与 `daily.amount` 的千元差 1000 倍）——盘中把两者直接相除，量能比会偏小或偏大三个数量级，且整张表照常打印不报错，先统一口径再除。
+- **金额单位**：`top_inst` / `top_list` / `limit_list_d` / `kpl_list` 是**元**；`daily_basic` / `moneyflow_dc` 是**万元/万股**（`limit_list_d.float_mv` 也是元，除以 1e8 才是亿）。**`ts.realtime_quote` 的 `AMOUNT` 也是元**（与 `daily.amount` 的千元差 1000 倍）——盘中把两者直接相除，量能比会偏小或偏大三个数量级，且整张表照常打印不报错，先统一口径再除。同理 **`limit_list_d.amount`（元）对 `daily.amount`（千元）** 算跨接口比值（如「反包日成交 / 断板日成交」）也差 1000 倍：比值会清一色 >1、分档全部落进「放量」桶，且不报错——跨接口求比例前先各自除以 1e8 / 1e5 换成亿元。
 - **流通市值字段名不统一**：`daily_basic` 叫 **`circ_mv`**（没有 `float_mv`，按 `float_mv` 取会直接 KeyError），`limit_list_d` 叫 `float_mv` 且是元。
 - **涨跌停阈值要分板块**：主板 10%、创业板/科创板 20%、北交所 30%。用统一 9.7% 会低估创业板的打板占比。
 - **持仓节奏只能看到「上榜日」**：卖出若未触发上榜就显示为「仍在持仓」；别把可见配对的比例说成全部交易的比例。
@@ -771,10 +790,11 @@ cron 表达式、数据脚本路径、飞书卡片规格、群 id 这些**本机
 - **别把回退日的数据当今天**：`limit_list_d` / `kpl_list` 盘后约 18:00 才更新，收盘到 18:00 之间它们可能还是空表。先看 `pro.daily(trade_date=今天)` 是否有 ~5500 行全市场数据；有就走 `a-share-limit-up-speed` 的 `reconstruct_emotion.py` 用 daily 重算板数与情绪面，并说明首封时间/席位待补。
 - **`top_list` 查个股历史上榜要逐日循环**：只给 `ts_code` + 起止日期会报「必填参数, trade_date」，必须按交易日历逐日取再筛个股；顺手拿到的 `reason` 是判「这波由涨幅偏离 / 振幅 / 换手触发」的依据。
 - **板块广度不能用 `stock_basic.industry` 聚合算**：PCB 概念活跃期间 `industry` 字段里一条「元器件」涨停都命中不到，广度看起来是 0，结论直接反。要用 `limit_list_d` 当日涨停池按 `kpl_list.theme` / `lu_desc` 关键词聚合，或用新闻里的板块联动名单交叉验证。反过来，**细分行业桶是干净指纹、宽行业桶是杂物筐**：`电机Ⅱ` 这类细分桶里每一家都是同一条链的真货，而 `通用设备` / `专用设备` / `汽车零部件` 里混着储能热管理、风机、煤机、矿机——主线家数必须逐只归类后再加，整类相加会把 6 家非主线算进主线。
+- **缓存 / CSV 往返后 dtype 会变，日期与时间列必须读回时指定 `dtype=str`**：交易日列（`20260803`）被 pandas 读成 int 后，`days.index(T)` 直接 `ValueError: 20260803 is not in list`；`first_time`（`09:25:00`）读成 int 后与字符串比较报 `Invalid comparison between dtype=int64 and str`。`pd.read_csv(..., dtype={'trade_date': str, 'first_time': str})`，或统一存成 `YYYYMMDD` / `HHMMSS` 的 int 再比大小。
 - **`limit_list_d` 不能整段拉**：`limit_list_d(start_date=..., end_date=...)` 单次在 6000 行处截断（跨 3 个月就触顶），日期数看着够、实际按日期截尾漏票。**必须按 trade_date 逐日拉再 concat**，缓存放 `~/.hermes/cache/limitpool/`；本机 pandas 没装 pyarrow，`to_parquet` 直接报错，用 pickle/CSV。
 - **停牌日 `daily` 没有行**：不能当断板、更不能当卖出；先用 `pro.suspend_d(ts_code, start_date, end_date)` 看 S/R。**停牌核查 2-3 天本身就是一次死亡考验**，复牌后的断板天量是判穿越的关键节点——缺行时不查停牌，会把「连板 → 停牌 → 复牌一字 → 断板」误算成连续上涨。
 - **断板天量日买榜全是东财拉萨系＝派发确认**：拉萨系（山南香曲东路 / 拉萨东环路·团结路 / 金融城南环路）占住买一买二、卖方却是中信系·红塔·华金这类大户席位时，是散户接盘、大户出货。这种票即便次日再创新高，也只按「次日赚走」做，不能按「二波主升」拿。
-- **`df.lt` 是 DataFrame 的方法**：连板数列命名成 `lt` 后必须写 `df['lt']`，`df.lt >= 3` 会 TypeError。
+- **`df.lt` / `df.T` / `df.size` 是 DataFrame 的方法与属性，不是列**：连板数列叫 `lt`、日期列叫 `T` 时，`df.lt >= 3` 会 TypeError，`df.T.nunique()` 拿到的是**转置**（症状是「`%d format: a real number is required, not Series`」，或 `groupby('T').apply(...)` 之后 `T` 列凭空消失）。列名是单个字母时一律写 `df['lt']` / `df['T']`，并且别给日期列取名叫 `T`。
 - **`limit_list_d` 必须显式传 `limit_type`**：不带参数只回涨停段，且返回表里**没有 `limit_type` 列**——按列筛类型会 AttributeError，跌停/炸板被静默算成 0、炸板率跟着失真；缓存按 `{date}_{type}` 分文件。
 - **Tushare 各接口列名不统一，别按印象猜**：`top_inst` 是 `buy/sell/net_buy`（没有 `l_buy/l_sell`），`disclosure_date` 只有 `pre_date/actual_date`（没有 `modify_date`）。写脚本前先 `print(list(df.columns))`，猜列名会连崩三次。**`disclosure_date` 还是全历史返回**，必须按 `end_date`（如 `'20260930'`）过滤拿最近一期，否则拿到 2010 年的几百行、当天真正要看的预约披露日反而读不到 —— 持仓处置里「明天会不会披露财报」就靠这一条 `pre_date`，漏了整段建议都会错。
 - **席位反查不能只靠 `hm_list.orgs` 子串**：`彩田路` 同时命中「红岭路」和「温州帮」百席大包，`西大街` 命中「量化打板」。子串命中只是候选，必须落到具体席位全称再报人名。

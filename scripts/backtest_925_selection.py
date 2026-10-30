@@ -348,6 +348,116 @@ def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
     return trades, skipped
 
 
+def run_mode(bk, days, first_sig=None, last_sig=None):
+    """最新模式（与 9:25 cron 提示词同序）：档位 → 高度龙池 → 情绪龙二波池 → 承接位池，每天最多 1 只。
+    买入 = T 日开盘价；主口径 T+1 收盘卖。返回 (trades, skipped)。"""
+    trades, skipped = [], []
+    for i in range(1, len(days) - 1):
+        T, P, N = days[i], days[i - 1], days[i + 1]
+        if (first_sig and T < first_sig) or (last_sig and T > last_sig):
+            continue
+
+        # 第 0 步 档位（开仓条件不变）
+        red, med, gate_pass = market_gate(bk, T)
+        if not gate_pass:
+            skipped.append(dict(date=T, reason='档位否决（红盘<40% 或 中位<=0）', pool='-',
+                                red=round(red * 100, 1), med=round(med, 2)))
+            continue
+
+        prev_pool = bk.pool(days, i - 1)
+        llp = lim_pool(P)
+
+        def rec(pool, code, name, board, gap, extra=None):
+            buy = float(bk.px[T].loc[code, 'open'])
+            sell = float(bk.px[N].loc[code, 'close'])
+            sell_o = float(bk.px[N].loc[code, 'open'])
+            row = dict(date=T, pool=pool, code=code, name=name, board=board, gap=round(gap, 2),
+                       buy=round(buy, 2), sell_close=round(sell, 2), sell_open=round(sell_o, 2),
+                       ret=round((sell / buy - 1) * 100, 2), ret_open=round((sell_o / buy - 1) * 100, 2),
+                       win=sell > buy, win_open=sell_o > buy, tier=pool, is_leader=(pool == '高度龙'),
+                       red=round(red * 100, 1), med=round(med, 2))
+            if extra:
+                row.update(extra)
+            trades.append(row)
+
+        def buyable(code):
+            if code not in bk.px[T].index or code not in bk.px[N].index:
+                return False
+            if code in bk.lim[T].index and float(bk.px[T].loc[code, 'open']) >= float(bk.lim[T].loc[code, 'up_limit']) - EPS:
+                return False
+            return True
+
+        # 第 1 步 高度龙池：昨日唯一最高板 + 高开 3-7% + 板块竞价强度为正
+        if len(prev_pool):
+            top = int(prev_pool.limit_times.max())
+            leaders = prev_pool[prev_pool.limit_times == top]
+            if len(leaders) == 1:
+                H = leaders.iloc[0].ts_code
+                gH = bk.open_pct(T, H)
+                peers = [c for c in prev_pool[prev_pool.industry == bk.industry(H)].ts_code if c != H]
+                m_peer = sector_open_median(bk, T, peers)
+                ok = (gH is not None and 3 <= gH <= 7 and buyable(H)
+                      and m_peer is not None and m_peer > 0)
+                if ok:
+                    rec('高度龙', H, bk.name(H), top, gH, dict(sec_n=len(peers), sec_med=round(m_peer, 2)))
+                    continue
+
+        # 第 2 步 情绪龙二波池：断板反包首板 + 曾>=3板 + up_stat 分子>=4 + 竞价 -3%~+3%
+        fan_rows = []
+        if llp is not None and len(llp):
+            for c, r in llp.iterrows():
+                if int(r['limit_times']) != 1 or _upcnt(r['up_stat']) < 4:
+                    continue
+                hist = max([bk.limit_times(days, j, c) for j in range(max(1, i - 20), i)] + [0])
+                if hist < 3:
+                    continue
+                p = bk.open_pct(T, c)
+                if p is None or not (-3 <= p <= 3) or not buyable(c):
+                    continue
+                amt_lu = float(r.amount) / 1e8
+                ab = None
+                for j in range(i - 2, max(0, i - 8), -1):
+                    dj = days[j]
+                    if c in bk.px[dj].index and not bk.limit_up(dj, c):
+                        ab = float(bk.px[dj].loc[c, 'amount']) / 1e5
+                        break
+                fan_rows.append(dict(code=c, name=r['name'], hist=hist, gap=p, amt=amt_lu,
+                                     ratio=(amt_lu / ab if ab else 9.9)))
+        if fan_rows:
+            # 曾板高 → 缩量（ratio 小）→ 成交额大
+            fan_rows.sort(key=lambda r: (r['hist'], -r['ratio'], r['amt']), reverse=True)
+            f = fan_rows[0]
+            rec('情绪龙二波', f['code'], f['name'], 1, f['gap'],
+                dict(hist=f['hist'], amt=round(f['amt'], 2), ratio=round(f['ratio'], 2)))
+            continue
+
+        # 第 3 步 承接位池：昨日连板>=2 + 高开 3-7% + 板位降序
+        rows3 = []
+        for _, r in prev_pool[prev_pool.limit_times >= 2].iterrows():
+            c = r.ts_code
+            p = bk.open_pct(T, c)
+            if p is None or not (3 <= p <= 7) or not buyable(c):
+                continue
+            sec_max = int(prev_pool[prev_pool.industry == r.industry].limit_times.max())
+            db = cached('basic', P)
+            turn = None
+            if db is not None and c in db.ts_code.values:
+                v = db.drop_duplicates('ts_code').set_index('ts_code').loc[c, 'turnover_rate_f']
+                turn = float(v) if pd.notna(v) else None
+            rows3.append(dict(code=c, name=r['name'], board=int(r.limit_times), gap=p,
+                              sec_max=sec_max, turn=turn if turn is not None else -1,
+                              amt=bk.amount(P, c)))
+        if rows3:
+            rows3.sort(key=lambda r: (r['board'], r['sec_max'], r['turn'], r['amt']), reverse=True)
+            k = rows3[0]
+            rec('承接位', k['code'], k['name'], k['board'], k['gap'],
+                dict(sec_max=k['sec_max'], turn=round(k['turn'], 1)))
+            continue
+
+        skipped.append(dict(date=T, reason='三池皆无票', pool='-', red=round(red * 100, 1), med=round(med, 2)))
+    return trades, skipped
+
+
 def summarize(trades, label):
     if not trades:
         print(f'\n[{label}] 无成交')
@@ -378,8 +488,9 @@ def main():
     ap.add_argument('--trades', action='store_true')
     ap.add_argument('--variants', action='store_true')
     ap.add_argument('--fetch', action='store_true', help='缓存缺失时用 Tushare 补齐（需 TUSHARE_TOKEN）')
-    ap.add_argument('--pool', choices=['leader', 'fanbao'], default='leader',
-                    help='leader=连板≥2 高开接力池（默认）；fanbao=情绪龙断板反包首板低吸池')
+    ap.add_argument('--pool', choices=['leader', 'fanbao', 'mode'], default='leader',
+                    help='leader=连板≥2 高开接力池；fanbao=情绪龙断板反包低吸池；'
+                         'mode=最新模式（档位→高度龙→情绪龙二波→承接位，每天≤1只）')
     ap.add_argument('--gap-lo', type=float, default=-3.0)
     ap.add_argument('--gap-hi', type=float, default=3.0)
     a = ap.parse_args()
@@ -399,6 +510,27 @@ def main():
         bk.day(d)
 
     print(f'区间 {days[0]}~{days[-1]}（{len(days)} 个交易日，信号日 {a.start}~{a.end}）')
+    if a.pool == 'mode':
+        tr, sk = run_mode(bk, days, first_sig=a.start, last_sig=a.end)
+        summarize(tr, '最新模式：档位 → 高度龙 → 情绪龙二波 → 承接位（每天≤1只）')
+        if tr:
+            t = pd.DataFrame(tr)
+            print('\n分池表现：')
+            for pool, g in t.groupby('pool'):
+                print(f"  {pool:<10} {len(g):>2}笔 胜率{g.win.mean()*100:>4.0f}% 均{g.ret.mean():+6.2f}% "
+                      f"中位{g.ret.median():+6.2f}% 开卖均{g.ret_open.mean():+6.2f}% 复利{(1+g.ret/100).prod():.3f}")
+            s = pd.DataFrame(sk)
+            if len(s):
+                print('\n未开仓天数：' + s.reason.value_counts().to_string().replace('\n', '｜'))
+            if a.trades:
+                print('\n逐笔明细（买入=T 日开盘价，卖=T+1 收盘）')
+                print(f"{'信号日':<10}{'池':<11}{'代码':<11}{'名称':<9}{'板':>3}{'高开%':>7}{'买价':>8}"
+                      f"{'T+1收':>8}{'收益%':>8}{'胜':>4}{'红盘%':>7}")
+                for r in tr:
+                    print(f"{r['date']:<10}{r['pool']:<11}{r['code']:<11}{str(r['name']):<9}{r['board']:>3}"
+                          f"{r['gap']:>7.2f}{r['buy']:>8.2f}{r['sell_close']:>8.2f}{r['ret']:>+8.2f}"
+                          f"{'✓' if r['win'] else '✗':>4}{r['red']:>7.1f}")
+        return
     if a.pool == 'fanbao':
         tr = run_fanbao(bk, days, first_sig=a.start, last_sig=a.end, gap_lo=a.gap_lo, gap_hi=a.gap_hi)
         summarize(tr, f'情绪龙·二波反包首板（买入区间 {a.gap_lo:g}%~{a.gap_hi:g}%）')
