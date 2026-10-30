@@ -182,6 +182,65 @@ def tier_of(board, circ, turn):
     return 'D'
 
 
+def lim_pool(d):
+    """limit_list_d(limit_type='U') 当日涨停池；缺文件返回 None。"""
+    f = os.path.join(CACHE, f'lim_U_{d}.pkl')
+    if not os.path.exists(f):
+        return None
+    return pd.read_pickle(f).drop_duplicates('ts_code').set_index('ts_code')
+
+
+def _upcnt(s):
+    try:
+        return int(str(s).split('/')[0])
+    except Exception:
+        return 0
+
+
+def run_fanbao(bk, days, first_sig=None, last_sig=None, gap_lo=-3.0, gap_hi=3.0):
+    """情绪龙·二波池：断板反包首板（limit_times==1、up_stat 分子≥4、20 日内曾≥3 连板），
+    用平/低开低吸口径（默认 -3%~+3%）买入，T+1 收盘卖。"""
+    trades = []
+    for i in range(1, len(days) - 1):
+        T, P, N = days[i], days[i - 1], days[i + 1]
+        if (first_sig and T < first_sig) or (last_sig and T > last_sig):
+            continue
+        ll = lim_pool(P)
+        if ll is None or not len(ll):
+            continue
+        rows = []
+        for c, r in ll.iterrows():
+            if int(r['limit_times']) != 1 or _upcnt(r['up_stat']) < 4:
+                continue
+            hist = max([bk.limit_times(days, j, c) for j in range(max(1, i - 20), i)] + [0])
+            if hist < 3:
+                continue
+            p = bk.open_pct(T, c)
+            if p is None or not (gap_lo <= p <= gap_hi):
+                continue
+            if c not in bk.px[N].index:
+                continue
+            if c in bk.lim[T].index and float(bk.px[T].loc[c, 'open']) >= float(bk.lim[T].loc[c, 'up_limit']) - EPS:
+                continue
+            rows.append(dict(ts_code=c, name=r['name'], industry=r['industry'], hist=hist, gap=p,
+                             up=_upcnt(r['up_stat'])))
+        if not rows:
+            continue
+        rows.sort(key=lambda r: (r['hist'], r['gap']), reverse=True)  # 历史板位越高越优先
+        pick = rows[0]
+        buy = float(bk.px[T].loc[pick['ts_code'], 'open'])
+        sell = float(bk.px[N].loc[pick['ts_code'], 'close'])
+        sell_o = float(bk.px[N].loc[pick['ts_code'], 'open'])
+        trades.append(dict(date=T, code=pick['ts_code'], name=pick['name'], industry=pick['industry'],
+                           board=1, tier='反包', hist=pick['hist'], up=pick['up'],
+                           gap=round(pick['gap'], 2), buy=round(buy, 2),
+                           sell_close=round(sell, 2), sell_open=round(sell_o, 2),
+                           ret=round((sell / buy - 1) * 100, 2), ret_open=round((sell_o / buy - 1) * 100, 2),
+                           win=sell > buy, win_open=sell_o > buy, is_leader=False,
+                           mkt_red=None, mkt_med=None, n_cand=len(rows)))
+    return trades
+
+
 def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
         first_sig=None, last_sig=None):
     """返回 (trades, skipped)"""
@@ -319,6 +378,10 @@ def main():
     ap.add_argument('--trades', action='store_true')
     ap.add_argument('--variants', action='store_true')
     ap.add_argument('--fetch', action='store_true', help='缓存缺失时用 Tushare 补齐（需 TUSHARE_TOKEN）')
+    ap.add_argument('--pool', choices=['leader', 'fanbao'], default='leader',
+                    help='leader=连板≥2 高开接力池（默认）；fanbao=情绪龙断板反包首板低吸池')
+    ap.add_argument('--gap-lo', type=float, default=-3.0)
+    ap.add_argument('--gap-hi', type=float, default=3.0)
     a = ap.parse_args()
 
     if a.fetch:
@@ -336,6 +399,17 @@ def main():
         bk.day(d)
 
     print(f'区间 {days[0]}~{days[-1]}（{len(days)} 个交易日，信号日 {a.start}~{a.end}）')
+    if a.pool == 'fanbao':
+        tr = run_fanbao(bk, days, first_sig=a.start, last_sig=a.end, gap_lo=a.gap_lo, gap_hi=a.gap_hi)
+        summarize(tr, f'情绪龙·二波反包首板（买入区间 {a.gap_lo:g}%~{a.gap_hi:g}%）')
+        if a.trades and tr:
+            print('\n逐笔明细（卖=T+1 收盘）')
+            print(f"{'信号日':<10}{'代码':<11}{'名称':<9}{'曾板':>4}{'up':>4}{'高开%':>7}{'买价':>8}{'T+1收':>8}{'收益%':>8}{'胜':>4}")
+            for r in tr:
+                print(f"{r['date']:<10}{r['code']:<11}{str(r['name']):<9}{r['hist']:>4}{r['up']:>4}"
+                      f"{r['gap']:>7.2f}{r['buy']:>8.2f}{r['sell_close']:>8.2f}{r['ret']:>+8.2f}"
+                      f"{'✓' if r['win'] else '✗':>4}")
+        return
     trades, skipped = run(bk, days, first_sig=a.start, last_sig=a.end)
     s = pd.DataFrame(skipped)
     print('\n否决统计：' + (s.reason.value_counts().to_string().replace('\n', '｜') if len(s) else '无'))
