@@ -171,6 +171,17 @@ def sector_open_median(bk, d, codes):
     return median(vals) if vals else None
 
 
+def tier_of(board, circ, turn):
+    """质量分档（SKILL.md §4.5）：A 3板+ & 流通50-100亿 & 自由换手≥25%；B 其一；C 都不合；D 2板。"""
+    if board >= 3:
+        cap_ok = circ is not None and 50 <= circ <= 100
+        to_ok = turn is not None and turn >= 25
+        if cap_ok and to_ok:
+            return 'A'
+        return 'B' if (cap_ok or to_ok) else 'C'
+    return 'D'
+
+
 def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
         first_sig=None, last_sig=None):
     """返回 (trades, skipped)"""
@@ -213,6 +224,8 @@ def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
 
         # S3 候选
         cands = prev_pool[prev_pool.limit_times >= 2].copy()
+        db = cached('basic', P)
+        db = db.drop_duplicates('ts_code').set_index('ts_code') if db is not None else None
         rows = []
         for _, r in cands.iterrows():
             c = r.ts_code
@@ -223,9 +236,18 @@ def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
             if c in lm.index and float(px.loc[c, 'open']) >= float(lm.loc[c, 'up_limit']) - EPS:
                 continue  # 一字开盘，买不到
             peers = [x for x in prev_pool[prev_pool.industry == r.industry].ts_code if x != c]
+            turn = circ = None
+            if db is not None and c in db.index:
+                if 'turnover_rate_f' in db.columns and pd.notna(db.loc[c, 'turnover_rate_f']):
+                    turn = float(db.loc[c, 'turnover_rate_f'])
+                if 'circ_mv' in db.columns and pd.notna(db.loc[c, 'circ_mv']):
+                    circ = float(db.loc[c, 'circ_mv']) / 1e4  # 万元 → 亿
+            sec_pool = prev_pool[prev_pool.industry == r.industry]
             rows.append(dict(ts_code=c, name=r['name'], industry=r.industry,
                              limit_times=int(r.limit_times), gap=p,
                              sector_med=sector_open_median(bk, T, peers),
+                             sec_max_board=int(sec_pool.limit_times.max()),
+                             turnover=turn, circ=circ,
                              prev_amount=bk.amount(P, c),
                              is_leader=(c == H)))
         if only_leader:
@@ -236,8 +258,11 @@ def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
                                 leader_board=int(prev_pool.limit_times.max()) if len(prev_pool) else None,
                                 gap=g_H, peer_med=m_peer, peer_n=n_peer))
             continue
-        rows.sort(key=lambda r: (r['is_leader'], r['sector_med'] if r['sector_med'] is not None else -99,
-                                 r['prev_amount']), reverse=True)
+        # 排序（词典序）：唯一最高标永远第一；其余按 板位 → 同题材最高板 → 自由换手 → 高开 → T-1 成交额
+        # 不做加权打分：136 个候选上拟合的复合权重在档位放行日反而更差（45% vs 55%），是过拟合
+        rows.sort(key=lambda r: (1 if r['is_leader'] else 0, r['limit_times'], r['sec_max_board'],
+                                 r['turnover'] if r['turnover'] is not None else -1,
+                                 r['gap'], r['prev_amount']), reverse=True)
         pick = rows[0]
 
         buy = float(bk.px[T].loc[pick['ts_code'], 'open'])
@@ -251,6 +276,9 @@ def run(bk, days, use_gate=True, use_leader_read=True, only_leader=False,
         trades.append(dict(date=T, code=pick['ts_code'], name=pick['name'], industry=pick['industry'],
                            board=pick['limit_times'], gap=round(pick['gap'], 2),
                            sector_med=None if pick['sector_med'] is None else round(pick['sector_med'], 2),
+                           tier=tier_of(pick['limit_times'], pick['circ'], pick['turnover']),
+                           turnover=None if pick['turnover'] is None else round(pick['turnover'], 1),
+                           circ=None if pick['circ'] is None else round(pick['circ'], 1),
                            is_leader=pick['is_leader'], buy=round(buy, 2), sell_close=round(sell_c, 2),
                            sell_open=round(sell_o, 2), ret=round((sell_c / buy - 1) * 100, 2),
                            ret_open=round((sell_o / buy - 1) * 100, 2),
@@ -274,6 +302,10 @@ def summarize(trades, label):
     print('  按板数：' + '｜'.join(
         f"{int(b)}板 {len(g)}笔 胜率{g.win.mean()*100:.0f}% 均{g.ret.mean():+.2f}%"
         for b, g in sorted(t.groupby('board'))))
+    if 'tier' in t.columns:
+        print('  按质量档：' + '｜'.join(
+            f"{k}档 {len(g)}笔 胜率{g.win.mean()*100:.0f}% 均{g.ret.mean():+.2f}%"
+            for k, g in sorted(t.groupby('tier'))))
     ld = t[t.is_leader]
     if len(ld):
         print(f"  其中「自己就是最高标」：{len(ld)}笔 胜率{ld.win.mean()*100:.0f}% 均{ld.ret.mean():+.2f}%")
@@ -312,10 +344,11 @@ def main():
     if a.trades and trades:
         t = pd.DataFrame(trades)
         print('\n逐笔明细（卖=T+1 收盘）')
-        print(f"{'信号日':<10}{'代码':<11}{'名称':<9}{'板':>3}{'行业':<8}{'高开%':>7}{'买价':>8}"
+        print(f"{'信号日':<10}{'代码':<11}{'名称':<9}{'板':>3}{'档':>2}{'行业':<8}{'高开%':>7}{'买价':>8}"
               f"{'T+1收':>8}{'收益%':>8}{'胜':>4}{'红盘%':>7}{'候选':>5}")
         for _, r in t.iterrows():
-            print(f"{r.date:<10}{r.code:<11}{str(r['name']):<9}{r.board:>3}{str(r.industry):<8}"
+            print(f"{r.date:<10}{r.code:<11}{str(r['name']):<9}{r.board:>3}{str(r.get('tier','-')):>2}"
+                  f"{str(r.industry):<8}"
                   f"{r.gap:>7.2f}{r.buy:>8.2f}{r.sell_close:>8.2f}{r.ret:>+8.2f}{'✓' if r.win else '✗':>4}"
                   f"{r.mkt_red:>7.1f}{r.n_cand:>5}")
 
