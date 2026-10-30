@@ -94,19 +94,26 @@ python3 scripts/backtest_unique_top_board.py --start 20260701 --end 20261020 --t
 
 ```
 .
-├── SKILL.md                     # 主技能文件（11 节 + Pitfalls）
+├── SKILL.md                     # 主技能文件（13 节 + Pitfalls）
 ├── references/
 │   ├── roster.md                # 游资名录、语录、心法、接力口诀
 │   ├── roster-profile.md        # 批量实证原始表与逐条解读
 │   ├── seats-verified.md        # 席位核对结果
 │   ├── yu-lu.md                 # 语录汇编
 │   ├── sentiment-cycle-quant.md # 情绪周期量化阈值、情绪龙判法、二波与禁区
+│   ├── board-types-volume.md    # 板型清单、三派量能标准、一进二量能定档与实测
+│   ├── cycle-crossing-screen.md # 「周期穿越」全市场扫描的口径与四类定性
 │   ├── unique-top-board-backtest.md   # 回测口径、逐笔与记账坑
 │   └── after-hours-selection.md # 盘后定标的的算法与代码配方（含 4.5 身份判定）
 ├── scripts/
 │   ├── query_hot_money_roster_profile.py   # 多游资批量画像
 │   ├── query_hot_money_seat_profile.py     # 单游资画像
-│   └── backtest_unique_top_board.py        # 唯一最高标回测
+│   ├── backtest_unique_top_board.py        # 唯一最高标回测
+│   ├── calibrate_board_volume.py           # 一进二量能分档校准（含一字板剔除）
+│   ├── first_board_auction.py              # 首板战法：9:25 竞价选股与回测
+│   ├── dragon_market_view.py               # 盘面全景：指数/涨跌/晋级率/梯队/广度
+│   ├── screen_cycle_crossing.py            # 「穿越龙」全市场扫描
+│   └── intraday_rescan.py                  # 盘中复核：9:25 结论是否需要改
 ├── assets/                      # logo、AI 接入条、社交预览图
 └── requirements.txt
 ```
