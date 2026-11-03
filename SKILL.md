@@ -54,7 +54,7 @@ A 股短线「龙头战法」的总纲：各代顶级游资的共识与分歧、
 - 回测跑出「现行阈值反向」这种结论时，正确写法是「数据观察（只记录，不据此改规则）」，原规则原文保留，改动单独提出来等他点头（原话：「这个你别擅自改」）。
 - 同理：不许把「窗口内没有 X 就空仓」这类硬门槛当成自己的发明写进规则；开不开仓只由现行档位标准决定，选票规则只决定「买谁 + 多少仓位」。
 - 一次会话里既做研究又改规则、且没有单独确认的，等于越权——v1.1.3 就是这幺被退回的。
-- **发布前先确认 `main` 包含最新 tag**：`git merge-base --is-ancestor <最新tag> HEAD` 返回非 0 = main 落后于已发布版本（tag 打在没合回 main 的提交上）。此时直接改 main 再 commit，会把中间版本的内容**静默回退**——diff 看着像「新增」，实际是「回退已发布内容」，用户看到的是版本号更新、内容变旧。正确顺序：`git stash -u` → `git merge --ff-only <最新tag>` → 重打改动（CHANGELOG/README 基线已变，`stash pop` 会冲突）→ commit → annotated tag → `git push --follow-tags` → `gh release create <tag> --latest`。同步本机 skill 目录也要在同一轮做，否则下次会话加载的还是旧版。
+- **发布前先确认 `main` 包含最新 tag**（公开 repo 是 `sysean/dragon-head-tactics`，本机路径 `~/Documents/code/dragon-head-tactics`；**skill 目录本身不是 git 仓库**，改完要手动 `cp SKILL.md`（及新脚本/引用）到 repo 再 commit）：`git merge-base --is-ancestor <最新tag> HEAD` 返回非 0 = main 落后于已发布版本（tag 打在没合回 main 的提交上）。此时直接改 main 再 commit，会把中间版本的内容**静默回退**——diff 看着像「新增」，实际是「回退已发布内容」，用户看到的是版本号更新、内容变旧。正确顺序：`git stash -u` → `git merge --ff-only <最新tag>` → 重打改动（CHANGELOG/README 基线已变，`stash pop` 会冲突）→ commit → annotated tag → `git push --follow-tags` → `gh release create <tag> --latest`。同步本机 skill 目录也要在同一轮做，否则下次会话加载的还是旧版。
 
 配套数据口径（涨停/连板/龙虎榜字段与坑）见 skill `a-share-limit-up-speed`；本 skill 讲**交易体系**
 与**游资席位画像**。数据源一律 Tushare Pro，不引第三方行情源（实时价用 `rt_min`）。
@@ -628,6 +628,10 @@ python3 scripts/screen_cycle_crossing.py --start 20260701 --end 20261021 --detai
 ```
 
 ## 输出纪律：问「买哪只」时只给一只（sean_yang 定）
+
+- **买点口径一律用「9:25 竞价价 = 开盘价」，禁止拿涨停价/排板价当买点**（sean_yang 2026-11-03 纠正：「我让你按开盘数据来说，你让我 9.29 排板什么意思」）。打板口径在这套模型里是负期望（−1.03%），写「排板 X 元」等于把最差的买法推荐给他。
+- 每个买点必须写成「开盘价区间 + 分钟量能门槛」两件套：例 `高开 0–6%（9.29–9.85）+ 开盘 5 分钟成交 ≥0.49 亿`；只给价格不给量能＝不可执行。
+- 复盘今天时同样用开盘价口径报收益（`现价/开盘价 − 1`），不要用「涨停价买入」倒算。
 
 - 用户问「推荐一只 / 买哪只」时，**最终只给一只**，并把筛选过程压成「五维一行一条」：量价（模型四条件）、板块共振（同题材涨停家数）、位置（近 16 日涨幅 + 距 MA10）、封板质量（首封时间/炸板次数/封单占成交）、容量（成交额/流通市值）。
 - 必须写「为什么不是另外几只」，每只一句硬伤（不许笼统说「不如它」）；并列候选只能进「备选」一句，不能占主推位。
