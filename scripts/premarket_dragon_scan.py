@@ -342,6 +342,13 @@ def main():
         print('\n'.join(out)); return
     p("数据源 %s；快照时间 %s；覆盖 %d 只" % (q.attrs.get('src', '?'), q.attrs.get('ts', '?'), len(q)))
     qi = q.set_index('code')
+    # 快照时间守卫：晚于 09:31 时快照里的成交额是当日累计（不是竞价额），
+    # 用它算「竞价占昨全天」会虚高，必须停用该评分项，否则排序会被大票带偏。
+    snap_ts = str(q.attrs.get('ts', '?'))
+    VOL_OK = snap_ts[:5] <= '09:31'
+    if not VOL_OK:
+        p('\n⚠ 快照时间 %s 晚于 09:31：成交额为当日累计口径，「竞价占昨全天」不可用，'
+          '已停用该评分项（排序只按高开/首板质量/板块共振/首封）。' % snap_ts)
 
     for c in idx_codes:
         if c in qi.index:
@@ -391,9 +398,10 @@ def main():
             if pre <= 0 or px <= 0:
                 continue
             lim = round(pre * (1 + limit_pct(code)), 2)
-            if abs(px - lim) < 0.011:          # 一字/涨停开：买不到，不进候选
+            opn = float(q0['open']) if q0.get('open') == q0.get('open') and q0.get('open') else px
+            if abs(opn - lim) < 0.011:         # 一字/涨停开：看开盘价，不看现价（回放时现价可能已封板）
                 continue
-            gap = (px / pre - 1) * 100
+            gap = (opn / pre - 1) * 100
             amt = (r['amount'] or 0) / 1e8
             fd = (r['fd_amount'] / r['amount'] * 100) if r['amount'] else 999
             ind = ind_cnt.get(r['industry'], 0)
@@ -413,7 +421,7 @@ def main():
                 sc += 1; why.append('同行业涨停%d家' % ind)
             else:
                 why.append('板块仅%d家' % ind)
-            if vp == vp:
+            if vp == vp and VOL_OK:
                 if vp >= 15:
                     sc += 2; why.append('竞价占昨全天%.0f%%' % vp)
                 elif vp >= 8:
@@ -436,7 +444,9 @@ def main():
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
-            ranked = sorted(cand2, key=lambda x: (-x[1], -(x[9] if x[9] == x[9] else 0)))
+            # 同分排序：先竞价量能（可用时），否则按首板成交额（越大越能进大资金）
+            ranked = sorted(cand2, key=lambda x: (-x[1],
+                                                  -(x[9] if (VOL_OK and x[9] == x[9]) else x[5])))
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
                 p("[%s %d分] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
                   % (tier, sc, name, code, gap, amt, fd, tover, ' / '.join(why)))
@@ -561,7 +571,8 @@ def main():
     # 一进二首选：已算好的 cand2 第 1 名
     p("\n-- 一进二首选（昨日首板，静态分最高）--")
     if 'cand2' in dir() and cand2:
-        ranked2 = sorted(cand2, key=lambda x: (-x[1], -(x[9] if x[9] == x[9] else 0)))
+        ranked2 = sorted(cand2, key=lambda x: (-x[1],
+                                               -(x[9] if (VOL_OK and x[9] == x[9]) else x[5])))
         t, sc, code, name, gap, amt, fd, tover, ind, vp, why = ranked2[0]
         p("首选：[%s 档 %d 分] %s %s｜高开 %+.1f%%｜首板 %.2f 亿｜封成比 %.1f%%｜换手 %.1f%%｜同行业涨停 %d 家"
           % (t, sc, name, code, gap, amt, fd, tover, ind))
