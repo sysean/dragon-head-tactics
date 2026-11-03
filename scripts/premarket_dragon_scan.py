@@ -509,7 +509,7 @@ def main():
         lu_n = int(len(U)) if not U.empty else 0
         maxb = int(pd.to_numeric(U['board'], errors='coerce').fillna(0).max()) if not U.empty else 0
         red_pct = float((allq.pct > 0).mean() * 100) if ('allq' in dir() and allq is not None and len(allq)) else float('nan')
-        prev2 = pro.limit_list_d(trade_date=trading_days('20260101', prev)[-2] if False else pro.trade_cal(exchange='SSE', start_date='20260601', end_date=prev, is_open='1')['cal_date'].tolist()[-2], limit_type='U')
+        prev2 = pro.limit_list_d(trade_date=trading_days('20260101', prev)[-2] if False else sorted(pro.trade_cal(exchange='SSE', start_date='20260601', end_date=prev, is_open='1')['cal_date'].tolist())[-2], limit_type='U')
         promo = (len(set(U['ts_code']) & set(prev2['ts_code'])) / max(len(prev2), 1) * 100) if (not U.empty and prev2 is not None and len(prev2)) else float('nan')
     except Exception:
         lu_n, maxb, red_pct, promo = 0, 0, float('nan'), float('nan')
@@ -583,6 +583,18 @@ def main():
         p("执行门槛：9:35 开盘 5 分钟成交 ≥ 首板全天 8%%，未过不买")
     else:
         p("昨日首板无合格候选（或全为一字）")
+
+    # 存 09:25 快照（供 09:35 相减，得到「集合竞价 + 开盘 5 分钟」成交额）
+    try:
+        if VOL_OK:
+            snap = qi[['amount']].copy()
+            snap['ts'] = snap_ts
+            sp = os.path.expanduser('~/.hermes/cache/f2s_rank/snap_925_%s.pkl' % datetime.datetime.now().strftime('%Y%m%d'))
+            os.makedirs(os.path.dirname(sp), exist_ok=True)
+            pd.to_pickle(snap, sp)
+            p("\n[快照] 09:25 累计成交额已存档 %d 只 → %s" % (len(snap), sp))
+    except Exception as _e:
+        p("\n[快照] 存档失败：%s" % _e)
 
     p("\n【口径】昨日涨停/板数/封单/首封/席位 = Tushare 完整口径；今日=09:25 成交竞价快照"
       "（爬虫接口，非 rt_min，无 5次/分钟 限频）；未取到的不做假设。")
