@@ -112,7 +112,8 @@ python3 scripts/backtest_unique_top_board.py --start 20260701 --end 20261020 --t
 │   ├── calibrate_board_volume.py           # 一进二量能分档校准（含一字板剔除）
 │   ├── first_board_auction.py              # 首板战法：9:25 竞价选股与回测
 │   ├── dragon_market_view.py               # 盘面全景：指数/涨跌/晋级率/梯队/广度
-│   ├── screen_cycle_crossing.py            # 「穿越龙」全市场扫描
+│   ├── screen_cycle_crossing.py
+│   ├── screen_emotion_dragon.py            # 「穿越龙」全市场扫描
 │   └── intraday_rescan.py                  # 盘中复核：9:25 结论是否需要改
 ├── assets/                      # logo、AI 接入条、社交预览图
 └── requirements.txt
@@ -131,7 +132,7 @@ python3 scripts/backtest_unique_top_board.py --start 20260701 --end 20261020 --t
 
 ## 版本与更新日志
 
-当前版本 **v1.1.6**（与 `SKILL.md` 的 `version:` 字段一致）。逐版变更见 [CHANGELOG.md](CHANGELOG.md)，
+当前版本 **v1.1.7**（与 `SKILL.md` 的 `version:` 字段一致）。逐版变更见 [CHANGELOG.md](CHANGELOG.md)，
 每个版本对应一个 [Release](https://github.com/sysean/dragon-head-tactics/releases)。
 
 ## 许可
