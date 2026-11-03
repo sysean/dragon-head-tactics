@@ -1,7 +1,7 @@
 ---
 name: yz-dragon-head-tactics
 description: Use when 问龙头战法/游资手法/打板回测。含分歧买点、情绪周期、游资席位画像、唯一最高标回测。
-version: 1.1.8
+version: 1.1.7
 author: Hermes Agent
 license: MIT
 metadata:
@@ -603,6 +603,13 @@ python3 scripts/backtest_unique_top_board.py --mode hold --force-yizi   # 一字
 python3 scripts/screen_cycle_crossing.py --start 20260701 --end 20261021 --top 25
 python3 scripts/screen_cycle_crossing.py --start 20260701 --end 20261021 --detail 605058.SH,002696.SZ
 ```
+
+## 输出纪律：问「买哪只」时只给一只（sean_yang 定）
+
+- 用户问「推荐一只 / 买哪只」时，**最终只给一只**，并把筛选过程压成「五维一行一条」：量价（模型四条件）、板块共振（同题材涨停家数）、位置（近 16 日涨幅 + 距 MA10）、封板质量（首封时间/炸板次数/封单占成交）、容量（成交额/流通市值）。
+- 必须写「为什么不是另外几只」，每只一句硬伤（不许笼统说「不如它」）；并列候选只能进「备选」一句，不能占主推位。
+- 一只都不合格时，直接说「今天没有一只合格」并给观察池触发条件，不硬凑。
+- 实例（2026-11-03）：六只过初筛的一进二里只推 300426 华智数媒（量能比 1.70 全场最高 + 传媒 7-8 家共振 + 9 月来仅 +0.4% 位置干净 + 封单占成交 16.7% 六只最高 + 31 亿流通符合口径）；文投位置高、三峡无板块、中稀换手仅 4.4%、掌阅缩量+炸 4 次、紫竹缩量+容量小。
 
 - `scripts/backtest_first_to_second.py` —— **一进二量价回测**：T-1 首板 → T 日剔除一字/涨停开 → 两种买法（竞价买 / 打板）双口径，按高开幅度、封成比、首封时间、首板炸板次数、换手率、成交额、量能比七维分档，输出胜率/均值/中位与摸板率。缓存 `~/.hermes/cache/emotion/`。
 
