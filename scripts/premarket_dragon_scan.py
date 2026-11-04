@@ -232,6 +232,35 @@ def proportional_volume(codes, prev_date):
     return out, tot_yi
 
 
+def load_limit_pool(date, kind='U', retries=3):
+    """涨停/炸板池：先本地缓存（limitpool/lim_{date}_{kind}.pkl），再接口（限频时重试），成功后落缓存。
+    为什么：limit_list_d 有分钟限频，连跑几次就返回空；一旦返回空，9:25 的决策摘要会把涨停家数算成 0、闸门误判为开。"""
+    fp = os.path.expanduser('~/.hermes/cache/limitpool/lim_%s_%s.pkl' % (date, kind))
+    if os.path.exists(fp):
+        try:
+            df = pd.read_pickle(fp)
+            if df is not None and len(df):
+                return df
+        except Exception:
+            pass
+    last = None
+    for i in range(retries):
+        try:
+            df = pro.limit_list_d(trade_date=date, limit_type=kind)
+            if df is not None and len(df):
+                try:
+                    os.makedirs(os.path.dirname(fp), exist_ok=True); df.to_pickle(fp)
+                except Exception:
+                    pass
+                return df
+            last = 'empty'
+        except Exception as e:
+            last = e
+        time.sleep(3 * (i + 1))
+    p('[缺口] limit_list_d(%s,%s) 三次均失败/为空：%s' % (date, kind, str(last)[:80]))
+    return pd.DataFrame()
+
+
 def trading_days(start, end):
     cal = pro.trade_cal(exchange='SSE', start_date=start, end_date=end, is_open='1')
     return sorted(cal.cal_date.tolist())
@@ -271,15 +300,8 @@ def main():
     hm = seat_map()
 
     # ---------- 昨日涨停池 ----------
-    try:
-        U = pro.limit_list_d(trade_date=prev, limit_type='U')
-    except Exception as e:
-        U = pd.DataFrame()
-        p(f"[缺口] limit_list_d 取数失败: {e}")
-    try:
-        Z = pro.limit_list_d(trade_date=prev, limit_type='Z')
-    except Exception:
-        Z = pd.DataFrame()
+    U = load_limit_pool(prev, 'U')
+    Z = load_limit_pool(prev, 'Z')
     try:
         K = pro.kpl_list(trade_date=prev, tag='涨停')
     except Exception:
@@ -514,12 +536,13 @@ def main():
             p('\n[比例口径] 昨日全市场成交额 %.0f 亿 → 0.01%%=%.1f亿 0.02%%=%.1f亿 0.04%%=%.1f亿'
               % (MKT_YI, MKT_YI * 1e-4, MKT_YI * 2e-4, MKT_YI * 4e-4))
         cand2 = []
-        n_low_vr = [0]        # 量比 <1.8 被排除的只数
         n_gate = [0]          # 首板额 <1 亿被排除
         n_low_vp = [0]        # 竞昨比 <2% 被排除
         for _, r in first.iterrows():
             code = r['ts_code']
             if code not in qi.index:
+                continue
+            if code.endswith('.BJ') or 'ST' in str(r.get('name') or ''):   # 六道门第 1 条：剔 ST / 北交所（与 prep_925 同口径）
                 continue
             q0 = qi.loc[code]
             pre = float(q0['pre']) if q0['pre'] else 0.0
@@ -547,8 +570,6 @@ def main():
             # ===== 硬门槛（任一命中直接剔除，不参与打分）=====
             if amt < 1.0:
                 n_gate[0] += 1; continue                      # 流动性：首板额 <1 亿
-            if ratio is not None and ratio < 1.8:
-                n_low_vr[0] += 1; continue                    # 量比 <1.8（sean_yang 2026-11-04 定）
             if vp == vp and VOL_OK and vp < 2:
                 n_low_vp[0] += 1; continue                    # 竞价量占昨全天 <2%
 
@@ -596,7 +617,7 @@ def main():
             elif ratio >= 2:
                 sc += 1; why.append('%s%.1fx' % (tag, ratio))
             else:
-                why.append('%s%.1fx(1.8-2 偏弱)' % (tag, ratio))
+                why.append('%s%.1fx(偏弱)' % (tag, ratio))
 
             # ===== ④ 封板质量 1 分 =====
             if fd < 10 and tover >= 10:
@@ -630,11 +651,11 @@ def main():
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
                 p("[%s %d分] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
                   % (tier, sc, name, code, gap, amt, fd, tover, ' / '.join(why)))
-            if n_gate[0] or n_low_vr[0] or n_low_vp[0]:
-                p('硬门槛剔除：首板额<1亿 %d 只 ｜ 量比<1.8 %d 只 ｜ 竞昨比<2%% %d 只'
-                  % (n_gate[0], n_low_vr[0], n_low_vp[0]))
+            if n_gate[0] or n_low_vp[0]:
+                p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
+                  % (n_gate[0], n_low_vp[0]))
             nA = sum(1 for c in cand2 if c[0] == 'A'); nB = sum(1 for c in cand2 if c[0] == 'B')
-            p("合计（满分 10）：A 档 ≥8 分 %d 只（可买，需 9:35 量能二次确认）｜B 档 5-7 分 %d 只（半仓/观察）｜其余 C 档不做" % (nA, nB))
+            p("合计（满分 10）：A 档 ≥8 分 %d 只（可买，需 9:35 量能二次确认：开盘 5 分钟成交（不含竞价）≥ 首板全天 10%%）｜B 档 5-7 分 %d 只（半仓/观察）｜其余 C 档不做" % (nA, nB))
 
     # 板块竞价强度：昨日涨停股按题材分组，看今日竞价中位
     if not K.empty and not U.empty:
@@ -687,15 +708,21 @@ def main():
             p("竞价涨幅前12: " + ' ; '.join("%s(%s) %+.1f%%" % (r['name'], r['code'], r.pct) for _, r in top.iterrows()))
 
     # ---------- 决策摘要：今天做哪种打法 + 两套各自首选 ----------
+    # 三数各算各的：晋级率取数失败只影响晋级率本身，不能把涨停家数/最高板一起归零（否则闸门会被误判为开）
+    lu_n = int(len(U)) if not U.empty else 0
+    maxb = int(pd.to_numeric(U['board'], errors='coerce').fillna(0).max()) if not U.empty else 0
     try:
-        pol, pol_reason = [], []
-        lu_n = int(len(U)) if not U.empty else 0
-        maxb = int(pd.to_numeric(U['board'], errors='coerce').fillna(0).max()) if not U.empty else 0
         red_pct = float((allq.pct > 0).mean() * 100) if ('allq' in dir() and allq is not None and len(allq)) else float('nan')
-        prev2 = pro.limit_list_d(trade_date=trading_days('20260101', prev)[-2] if False else sorted(pro.trade_cal(exchange='SSE', start_date='20260601', end_date=prev, is_open='1')['cal_date'].tolist())[-2], limit_type='U')
-        promo = (len(set(U['ts_code']) & set(prev2['ts_code'])) / max(len(prev2), 1) * 100) if (not U.empty and prev2 is not None and len(prev2)) else float('nan')
     except Exception:
-        lu_n, maxb, red_pct, promo = 0, 0, float('nan'), float('nan')
+        red_pct = float('nan')
+    promo = float('nan')
+    try:
+        prev2_day = sorted(pro.trade_cal(exchange='SSE', start_date='20260601', end_date=prev, is_open='1')['cal_date'].tolist())[-2]
+        prev2 = load_limit_pool(prev2_day, 'U')
+        if not U.empty and prev2 is not None and len(prev2):
+            promo = len(set(U['ts_code']) & set(prev2['ts_code'])) / max(len(prev2), 1) * 100
+    except Exception as _e:
+        p('[缺口] 晋级率取数失败：%s' % str(_e)[:80])
 
     relay_ok = (lu_n >= 60) and (maxb >= 6) and (red_pct == red_pct and red_pct >= 40)
     yi_ok = (lu_n < 60) or (promo == promo and promo < 15)
@@ -763,11 +790,44 @@ def main():
         if len(ranked2) > 1:
             t2, sc2, c3, n3, g3 = ranked2[1][0], ranked2[1][1], ranked2[1][2], ranked2[1][3], ranked2[1][4]
             p("次选：[%s 档 %d 分] %s %s｜高开 %+.1f%%" % (t2, sc2, n3, c3, g3))
-        p("执行门槛：9:35 开盘 5 分钟成交 ≥ 首板全天 8%%，未过不买")
+        p("执行门槛：9:35 开盘 5 分钟成交（09:35 累计 − 竞价额）≥ 首板全天 10%，未过不买")
     else:
         p("昨日首板无合格候选（或全为一字）")
 
-    # 存 09:25 快照（供 09:35 相减，得到「集合竞价 + 开盘 5 分钟」成交额）
+    # 存 09:25 一进二排行榜（供 09:35 直接读取：静态分/档位/理由全部沿用，9:35 只叠量能分，不重算）
+    # 只在实时运行（无 --prev）时落盘；已有 09:31 前存的真实榜单时，盘后重跑不覆盖。
+    try:
+        if a.prev is None and 'cand2' in dir() and cand2:
+            rp = os.path.expanduser('~/.hermes/cache/f2s_rank/rank_925_%s.pkl' % today)
+            keep_old = False
+            if os.path.exists(rp):
+                try:
+                    old_pack = pd.read_pickle(rp)
+                    old_ts = str(old_pack.get('snap_ts', '?'))
+                    keep_old = (old_ts[:5] <= '09:31') and (snap_ts[:5] > '09:31')
+                except Exception:
+                    keep_old = False
+            if keep_old:
+                p("\n[排行榜] 已存在 09:31 前的真实榜单 %s，本次（快照 %s）不覆盖" % (rp, snap_ts))
+            else:
+                rank_rows = []
+                for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in cand2:
+                    q0 = qi.loc[code]
+                    rank_rows.append(dict(tier=tier, sc=int(sc), code=code, name=name, gap=float(gap), amt=float(amt),
+                                          fd=float(fd), tover=float(tover), ind=int(ind),
+                                          vp=(float(vp) if vp == vp else float('nan')), why=list(why),
+                                          open=float(q0['open']) if q0.get('open') == q0.get('open') else float('nan'),
+                                          pre=float(q0['pre']) if q0['pre'] else float('nan')))
+                pack = dict(trade_date=today, prev=prev, snap_ts=snap_ts, vol_ok=bool(VOL_OK),
+                            n_gate=int(n_gate[0]), n_low_vp=int(n_low_vp[0]),
+                            rows=rank_rows)
+                os.makedirs(os.path.dirname(rp), exist_ok=True)
+                pd.to_pickle(pack, rp)
+                p("\n[排行榜] 09:25 一进二排行榜已存档 %d 只 → %s" % (len(rank_rows), rp))
+    except Exception as _e:
+        p("\n[排行榜] 存档失败：%s" % _e)
+
+    # 存 09:25 快照（供 09:35 相减得到纯开盘 5 分钟成交额，这是量能门槛的分子）
     try:
         if VOL_OK:
             snap = qi[['amount']].copy()
