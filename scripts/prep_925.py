@@ -24,7 +24,6 @@ if os.path.exists('/usr/local/bin/python3') and os.path.realpath(sys.executable)
 sys.path.insert(0, os.path.expanduser('~/.hermes/scripts'))
 
 import datetime  # noqa: E402
-import re  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from premarket_dragon_scan import pro, trading_days, last_prev_day  # noqa: E402
@@ -112,10 +111,7 @@ def _prep(target):
             for _, kr in k.iterrows():
                 ts = [x.strip() for x in str(kr.get('theme') or '').replace('，', '、').split('、') if x.strip()]
                 stock_themes[kr['ts_code']] = ts
-                # kpl_list 没有 limit_times 列，板数要从 status（如「8天6板」「3连板」「首板」）里解析；解析不到按 1
-                st = str(kr.get('status') or '')
-                m_ = re.search(r'(\d+)\s*连?板', st)        # 「5天4板」→4，「2连板」→2，「首板」→1
-                lt = int(m_.group(1)) if m_ else 1
+                lt = int(kr.get('limit_times') or 1) if str(kr.get('limit_times') or '1').isdigit() else 1
                 for t in ts:
                     theme_cnt[t] = theme_cnt.get(t, 0) + 1
                     theme_max[t] = max(theme_max.get(t, 1), lt)
