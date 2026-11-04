@@ -724,7 +724,7 @@ def main():
     except Exception as _e:
         p('[缺口] 晋级率取数失败：%s' % str(_e)[:80])
 
-    relay_ok = (lu_n >= 60) and (maxb >= 6) and (red_pct == red_pct and red_pct >= 40)
+    relay_ok = (lu_n >= 60) and (red_pct == red_pct and red_pct >= 40)   # 最高板≥6 已于 v1.5.1 取消（sean_yang 定）
     yi_ok = (lu_n < 60) or (promo == promo and promo < 15)
     if relay_ok:
         play = '高位接力'
@@ -736,7 +736,7 @@ def main():
     p("周期三数：昨日涨停 %d 家 / 最高板 %d 板 / 昨日涨停池今日竞价红盘 %.0f%% / 晋级率 %s"
       % (lu_n, maxb, red_pct if red_pct == red_pct else -1,
          ('%.1f%%' % promo) if promo == promo else '未取到'))
-    p("高位接力条件（涨停≥60 且 最高板≥6 且 红盘率≥40%%）：%s" % ('满足' if relay_ok else '不满足'))
+    p("高位接力条件（涨停≥60 且 红盘率≥40%%；最高板门槛已取消）：%s" % ('满足' if relay_ok else '不满足'))
     p("一进二闸门（涨停<60 或 晋级率<15%%）：%s" % ('满足' if yi_ok else '不满足'))
     p("→ 今天适合：【%s】%s" % (play, '' if play != '空仓' else '（无高标也无合适首板环境，不开新仓）'))
 

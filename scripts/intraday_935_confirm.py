@@ -74,7 +74,7 @@ def main():
         promo = (len(set(U['ts_code']) & set(p2['ts_code'])) / max(len(p2), 1) * 100) if p2 is not None and len(p2) else float('nan')
     except Exception:
         promo = float('nan')
-    relay_ok = (lu_n >= 60) and (maxb >= 6) and (red_pct == red_pct and red_pct >= 40)
+    relay_ok = (lu_n >= 60) and (red_pct == red_pct and red_pct >= 40)   # 最高板≥6 已于 v1.5.1 取消（sean_yang 定）
     yi_ok = (lu_n < 60) or (promo == promo and promo < 15)
     play = '高位接力' if relay_ok else ('一进二' if yi_ok else '空仓')
     p("\n== 决策摘要（09:35 复核）==")
