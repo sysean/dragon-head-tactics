@@ -161,6 +161,29 @@ def fetch_quotes(codes, need_time=True):
     return out
 
 
+def fetch_auction(date):
+    """集合竞价官方表 stk_auction（需在权限中心单独开通「集合竞价成交」）。
+
+    为什么优先用它：9:26 就能拿到全市场竞价成交额，不依赖爬虫快照按时运行，
+    也不受「快照晚于 09:31 就是累计额」这条守卫影响；历史自 2025-01-16 起可回溯。
+    返回 DataFrame(index=代码)，列：amount（元）/ price（竞价均价＝开盘价）/ pre_close /
+    turnover_rate（竞价换手 %）/ volume_ratio（竞价量比，与首板日 daily_basic 量比不是同一口径）。
+    """
+    try:
+        au = pro.stk_auction(trade_date=date)
+    except Exception as e:
+        p('[竞价] stk_auction 不可用（未开通权限或当日未发布）：%s' % str(e)[:90])
+        return None
+    if au is None or not len(au):
+        p('[竞价] stk_auction 当日 %s 无数据，回落实时快照' % date)
+        return None
+    au = au.drop_duplicates(subset=['ts_code']).set_index('ts_code')
+    for c in ('amount', 'price', 'pre_close', 'turnover_rate', 'volume_ratio'):
+        if c in au.columns:
+            au[c] = pd.to_numeric(au[c], errors='coerce')
+    return au
+
+
 def proportional_volume(codes, prev_date):
     """量能口径：优先官方量比，退化用「首板额 ÷ 前 5 日均额」。
 
@@ -398,12 +421,34 @@ def main():
         p('\n⚠ 快照时间 %s 晚于 09:31：成交额为当日累计口径，「竞价占昨全天」不可用，'
           '已停用该评分项（排序只按高开/首板质量/板块共振/首封）。' % snap_ts)
 
+    # 官方集合竞价表（stk_auction）优先：竞价额 / 竞价均价 / 竞价换手 / 竞价量比一次全给，
+    # 不受快照时间影响。命中就覆盖 qi 的 amount（＝竞价额）、open（＝竞价均价）、pre，
+    # 于是竞昨比与一字判定都走官方口径，快照只负责现价。
+    AU = fetch_auction(today)
+    if AU is not None:
+        hit = [c for c in qi.index if c in AU.index]
+        if hit:
+            qq = AU.loc[hit]
+            qi.loc[hit, 'amount'] = qq['amount'].values
+            qi.loc[hit, 'open'] = qq['price'].values
+            qi.loc[hit, 'pre'] = qq['pre_close'].values
+            qi['au_tover'] = float('nan')
+            qi['au_vr'] = float('nan')
+            if 'turnover_rate' in qq.columns:
+                qi.loc[hit, 'au_tover'] = qq['turnover_rate'].values
+            if 'volume_ratio' in qq.columns:
+                qi.loc[hit, 'au_vr'] = qq['volume_ratio'].values
+            VOL_OK = True
+            p('[竞价] 官方集合竞价表命中 %d/%d 只：竞昨比与一字判定改用官方口径（快照只取现价），'
+              '竞价换手/竞价量比随行显示' % (len(hit), len(qi)))
+
     for c in idx_codes:
         if c in qi.index:
             r = qi.loc[c]
             p("指数 %s %.2f %+.2f%%" % (r['name'], r['price'], (r['price'] / r['pre'] - 1) * 100))
 
     prev_vol = dict(zip(AL.ts_code, AL.vol))
+    prev_amt = dict(zip(AL.ts_code, AL.amount))   # 昨日全天成交额，单位千元
     p("\n-- 候选（昨日连板≥2 + 关注票）--")
     rows = []
     for code, name, bd in pool:
@@ -413,14 +458,17 @@ def main():
         pre = float(r['pre']) if r['pre'] else None
         if not pre:
             rows.append((bd, "%s %s 无昨收" % (name, code))); continue
-        px = float(r['price'])
+        # 竞价价优先取官方竞价均价（＝开盘价）：盘中回放时快照里的 price 已是收盘价
+        px = float(r['open']) if (r.get('open') == r.get('open') and r.get('open')) else float(r['price'])
         if not px or px != px:      # 竞价无成交(停牌/无撮合)
             rows.append((bd, "%s %s 竞价无成交价" % (name, code))); continue
         pct = (px / pre - 1) * 100
         lim = round(pre * (1 + limit_pct(code)), 2)
         one = abs(px - lim) < 0.011
         flag = '涨停开/一字' if one else ('高开' if pct >= 3 else ('平开' if pct > -1 else '低开'))
-        vp = (float(r['vol_hand']) / prev_vol[code] * 100) if prev_vol.get(code) else float('nan')
+        # 竞昨比＝竞价成交额 ÷ 昨日全天成交额（daily.amount 是千元，故 ×1000 换元）；
+        # 旧写法用 vol_hand ÷ 昨全天手数，晚快照时会变成「今日累计量÷昨量」，标签却写「占昨全天」。
+        vp = (float(r['amount']) / (float(prev_amt[code]) * 1000) * 100) if prev_amt.get(code) else float('nan')
         bid = r.get('bid1')
         feng = (float(bid) * px * 100 / 1e8) if bid == bid and bid else float('nan')
         tag = ("%d板 %s %s" % (bd, name, code)) if bd else ("%s %s" % (name or '', code))
@@ -553,6 +601,12 @@ def main():
             # ===== ④ 封板质量 1 分 =====
             if fd < 10 and tover >= 10:
                 sc += 1; why.append('封单%.0f%%+换手%.0f%%' % (fd, tover))
+
+            # ===== 竞价官方字段：只显示不计分（实测对次日收益无稳定贡献，见 SKILL §4.6）=====
+            _at = q0['au_tover'] if 'au_tover' in qi.columns else float('nan')
+            _av = q0['au_vr'] if 'au_vr' in qi.columns else float('nan')
+            if _at == _at and _av == _av:
+                why.append('竞价换手%.2f%%·竞价量比%.1f(参考)' % (_at, _av))
 
             # ===== 扣分项 =====
             if gap > 7:

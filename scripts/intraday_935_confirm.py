@@ -7,7 +7,7 @@
 1. 取昨日首板（limit_list_d U，limit_times==1），剔除今日一字/涨停开
 2. 09:35 快照：开盘价（算高开）、现价（是否上板）、累计成交额（≈开盘 5 分钟量能）
 3. 综合打分 = 9:25 静态分（首板额/板块共振/高开/封板质量/首封）+ 量能分
-   量能分：开盘 5 分钟成交 ≥ 首板全天 8% → +2；5–8% → +1；<5% → −2（缩量档胜率仅 26.6%）
+   量能分：开盘 5 分钟成交（09:35 累计 − 09:25 累计）≥ 首板全天 10% → +2；8–10% → +1；<8% → −2（缩量档胜率仅 26.6%）
 4. 输出 A/B/C 重排 + 每只「上板与否 / 量能占比 / 现涨幅」，并给一句结论动作
 
 用法
@@ -21,7 +21,7 @@ import argparse
 import datetime
 
 sys.path.insert(0, os.path.expanduser('~/.hermes/scripts'))
-from premarket_dragon_scan import pro, fetch_quotes, limit_pct, last_prev_day  # noqa: E402
+from premarket_dragon_scan import pro, fetch_quotes, limit_pct, last_prev_day, fetch_auction  # noqa: E402
 import pandas as pd  # noqa: E402
 import warnings  # noqa: E402
 
@@ -115,21 +115,30 @@ def main():
     if q is None:
         p('[缺口] 实时快照取数失败。'); print('\n'.join(out)); return
     qi = q.set_index('code')
-    # 09:31 快照：用来把「累计成交额」还原成「纯开盘 5 分钟成交额」
+    # 基线：把「09:35 累计成交额」还原成「开盘 5 分钟」。三个来源按优先级：
+    #   ① 官方集合竞价表 stk_auction（＝集合竞价成交额，9:26 起可取，不依赖任务是否按时跑）
+    #   ② snap_925_*.pkl（9:25 快照，数值与 ① 相等）
+    #   ③ snap_931_*.pkl（09:31，得到纯 09:30–09:35 连续竞价）
     base, label = None, ''
-    for f, lab in ((f'snap_925_{today}.pkl', '集合竞价 + 开盘 5 分钟（09:25→09:35 相减）'), 
-                   (f'snap_931_{today}.pkl', '纯 09:30–09:35 连续竞价（09:31→09:35）')):
-        fp = os.path.expanduser(f'~/.hermes/cache/f2s_rank/{f}')
-        if os.path.exists(fp):
-            try:
-                dfr = pd.read_pickle(fp)
-                # 兼容两种存档形状：带 code 列（新）/ code 作索引（旧）
-                base = (dfr.set_index('code') if 'code' in dfr.columns else dfr)['amount']
-                label = lab
-                break
-            except Exception as _e:
-                p(f"⚠ {f} 读取失败（{_e}），改用下一档基线")
-                base = None
+    AU = fetch_auction(today)
+    if AU is not None and 'amount' in AU.columns:
+        base = AU['amount'].dropna()
+        label = '官方竞价额（stk_auction，与 9:25 快照等价）'
+    if base is None or not len(base):
+        base, label = None, ''
+        for f, lab in ((f'snap_925_{today}.pkl', '集合竞价 + 开盘 5 分钟（09:25→09:35 相减）'),
+                       (f'snap_931_{today}.pkl', '纯 09:30–09:35 连续竞价（09:31→09:35）')):
+            fp = os.path.expanduser(f'~/.hermes/cache/f2s_rank/{f}')
+            if os.path.exists(fp):
+                try:
+                    dfr = pd.read_pickle(fp)
+                    # 兼容两种存档形状：带 code 列（新）/ code 作索引（旧）
+                    base = (dfr.set_index('code') if 'code' in dfr.columns else dfr)['amount']
+                    label = lab
+                    break
+                except Exception as _e:
+                    p(f"⚠ {f} 读取失败（{_e}），改用下一档基线")
+                    base = None
     if base is not None:
         p(f"量能口径：{label}，存档 {len(base)} 只")
     else:
@@ -169,6 +178,10 @@ def main():
         else:
             amt5 = amt_now
         vol5 = (amt5 / r['amount'] * 100) if r['amount'] else float('nan')
+        # 两个口径并列显示（别混）：
+        #   含竞价 = 09:35 累计额 ÷ 首板全天 —— 与新浪 5 分钟 K 首根的校准口径一致，是「集合竞价 + 开盘 5 分钟」的原意
+        #   不含竞价 = (09:35 累计额 − 竞价额) ÷ 首板全天 —— 现值 vol5，实际是纯 09:30–09:35 连续竞价
+        vol5_all = (amt_now / r['amount'] * 100) if r['amount'] else float('nan')
 
         sc, why = 0, []
         if amt_prev >= 5: sc += 2; why.append(f'首板{amt_prev:.1f}亿')
@@ -187,6 +200,8 @@ def main():
             if vol5 >= a.min_amt: sc += 2; why.append(f'<量能{vol5:.0f}%✓>')
             elif vol5 >= 8: sc += 1; why.append(f'量能{vol5:.0f}%偏弱')
             else: sc -= 2; why.append(f'<缩量{vol5:.0f}%✗>')
+        if vol5_all == vol5_all:
+            why.append(f'含竞价{vol5_all:.0f}%')
         seal = px >= lim - 0.011
         rows.append(dict(sc=sc, code=code, name=r['name'], ind=r['industry'], gap=gap,
                          amt_prev=amt_prev, vol5=vol5, pct=(px / pre - 1) * 100, seal=seal,
@@ -209,7 +224,7 @@ def main():
           f"{top['pre'] * (1 + top['gap'] / 100):.2f} 不破；仓位 ≤10%；止损 {stop:.2f}（-5%）或跌破开盘价放弃。")
     else:
         p('\n动作：A 档 0 只 → 今天不新开仓；只在 B 档里做半仓观察，或直接空仓等明天。')
-    p('\n【口径】量能＝09:35 累计成交额 ÷ 首板全天成交额（≈开盘 5 分钟占昨全天）；'
+    p('\n【口径】量能＝（09:35 累计成交额 − 09:25 累计成交额）÷ 首板全天成交额（= 集合竞价 + 开盘 5 分钟 占首板全天；无 09:25 基线时才退回累计额近似）；'
       '未过 10% 视为缩量（10% ≈ 量能比 1.5，实测 38 个首板样本校准），缩量档历史胜率仅 26.6%。')
     print('\n'.join(out))
 
