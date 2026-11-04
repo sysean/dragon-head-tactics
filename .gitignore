@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# 本机运维细节，不随公开版发布
+references/local-ops.md
+references/cron-replay.md

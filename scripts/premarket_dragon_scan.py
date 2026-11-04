@@ -161,6 +161,54 @@ def fetch_quotes(codes, need_time=True):
     return out
 
 
+def proportional_volume(codes, prev_date):
+    """量能口径：优先官方量比，退化用「首板额 ÷ 前 5 日均额」。
+
+    为什么不用 20 日均额：实测「首板额÷前20日均额」与官方量比的相关只有 0.807，
+    分档还出现凹陷（1.5–2 档反而更差）；改成前 5 日均额后相关系数 0.997，
+    分档单调。20 日窗口把「最近一轮放量」平滑掉了，是错的。
+    返回 ({code: (量比, 前5日均额亿元)}, 全市场成交额亿元)。
+    """
+    vr, adv5, tot_yi = {}, {}, float('nan')
+    codes = list(codes)
+    try:
+        mkt = pro.daily(trade_date=prev_date, fields='trade_date,amount')
+        if mkt is not None and len(mkt):
+            tot_yi = float(mkt['amount'].sum()) / 1e5
+        # 1) 官方量比（daily_basic.volume_ratio）
+        # 注意：daily_basic 同时传 trade_date + ts_code 会回 0 行，只能按日期全市场拉一次再本地筛
+        try:
+            b = pro.daily_basic(trade_date=prev_date, fields='ts_code,volume_ratio')
+        except Exception:
+            b = None
+        if b is not None and len(b):
+            want = set(codes)
+            for _, r in b.iterrows():
+                if r.ts_code in want and r.volume_ratio == r.volume_ratio and r.volume_ratio > 0:
+                    vr[r.ts_code] = float(r.volume_ratio)
+        # 2) 兜底：前 5 日均额
+        start = (datetime.datetime.strptime(prev_date, '%Y%m%d') - datetime.timedelta(days=20)).strftime('%Y%m%d')
+        frames = []
+        for i in range(0, len(codes), 50):
+            chunk = ','.join(codes[i:i + 50])
+            try:
+                d = pro.daily(ts_code=chunk, start_date=start, end_date=prev_date, fields='ts_code,trade_date,amount')
+            except Exception:
+                d = None
+            if d is not None and len(d):
+                frames.append(d)
+        if frames:
+            d = pd.concat(frames, ignore_index=True).sort_values('trade_date')
+            for code, g in d.groupby('ts_code'):
+                a = g['amount'].shift(1).tail(5)     # 前 5 日（不含当日）
+                if a.notna().sum() >= 3:
+                    adv5[code] = float(a.mean()) / 1e5
+    except Exception:
+        pass
+    out = {c: (vr.get(c), adv5.get(c)) for c in codes}
+    return out, tot_yi
+
+
 def trading_days(start, end):
     cal = pro.trade_cal(exchange='SSE', start_date=start, end_date=end, is_open='1')
     return sorted(cal.cal_date.tolist())
@@ -386,8 +434,41 @@ def main():
         U2 = U.copy()
         U2['lt'] = pd.to_numeric(U2['limit_times'], errors='coerce').fillna(0).astype(int)
         ind_cnt = U2.groupby('industry')['ts_code'].count().to_dict()
+        ind_max = U2.groupby('industry')['lt'].max().to_dict()      # 板块最高板（高度）
         first = U2[U2['lt'] == 1]
+        # 优先用前一晚 21:00 的预取包（prep_YYYYMMDD.pkl）：量比/均额/行业家数都已算好
+        ART, MKT_YI, THEME_OF, THEME_CNT, THEME_MAX, PEER_MODE = {}, float('nan'), {}, {}, {}, '实时'
+        prep_fp = os.path.expanduser('~/.hermes/cache/f2s_rank/prep_%s.pkl' % prev)
+        PREP = None
+        if os.path.exists(prep_fp):
+            try:
+                PREP = pd.read_pickle(prep_fp)
+                if str(PREP.get('trade_date')) != str(prev):
+                    PREP = None
+            except Exception:
+                PREP = None
+        if PREP is not None:
+            pf = PREP['first']
+            ART = {r['ts_code']: (r.get('vr') if r.get('vr') == r.get('vr') else None,
+                                  r.get('adv5_yi') if r.get('adv5_yi') == r.get('adv5_yi') else None)
+                   for _, r in pf.iterrows()}
+            MKT_YI = float(PREP.get('mkt_yi') or float('nan'))
+            THEME_OF = {r['ts_code']: (r.get('themes') if isinstance(r.get('themes'), (list, tuple)) else [])
+                        for _, r in pf.iterrows()}
+            THEME_CNT = PREP.get('theme_cnt') or {}
+            THEME_MAX = PREP.get('theme_max') or {}
+            PEER_MODE = '预取'
+            p('\n[数据] 用前一晚预取包 prep_%s.pkl：量比 %d/%d、题材 %d 个'
+              % (prev, sum(1 for v in ART.values() if v[0]), len(ART), len(THEME_CNT)))
+        else:
+            ART, MKT_YI = proportional_volume(first['ts_code'].tolist(), prev)
+        if MKT_YI == MKT_YI:
+            p('\n[比例口径] 昨日全市场成交额 %.0f 亿 → 0.01%%=%.1f亿 0.02%%=%.1f亿 0.04%%=%.1f亿'
+              % (MKT_YI, MKT_YI * 1e-4, MKT_YI * 2e-4, MKT_YI * 4e-4))
         cand2 = []
+        n_low_vr = [0]        # 量比 <1.8 被排除的只数
+        n_gate = [0]          # 首板额 <1 亿被排除
+        n_low_vp = [0]        # 竞昨比 <2% 被排除
         for _, r in first.iterrows():
             code = r['ts_code']
             if code not in qi.index:
@@ -409,38 +490,83 @@ def main():
             ft = int(str(r['first_time']).zfill(6)) if str(r['first_time']).isdigit() else 235959
             tover = float(r['turnover_ratio'] or 0)
             sc, why = 0, []
-            if amt >= 5:
-                sc += 2; why.append('额%.1f亿' % amt)
-            elif amt >= 2:
-                sc += 1; why.append('额%.1f亿' % amt)
+            # 量能口径：优先官方量比，退化用「首板额 ÷ 前 5 日均额」（不用 20 日）
+            vr_c, adv5_c = ART.get(code, (None, None))
+            share = (amt / MKT_YI * 100) if (MKT_YI == MKT_YI and MKT_YI > 0) else float('nan')
+            ratio = vr_c if (vr_c and vr_c > 0) else (amt / adv5_c if (adv5_c and adv5_c > 0) else None)
+            tag = '量比' if (vr_c and vr_c > 0) else '量比(5日均额算)'
+
+            # ===== 硬门槛（任一命中直接剔除，不参与打分）=====
+            if amt < 1.0:
+                n_gate[0] += 1; continue                      # 流动性：首板额 <1 亿
+            if ratio is not None and ratio < 1.8:
+                n_low_vr[0] += 1; continue                    # 量比 <1.8（sean_yang 2026-11-04 定）
+            if vp == vp and VOL_OK and vp < 2:
+                n_low_vp[0] += 1; continue                    # 竞价量占昨全天 <2%
+
+            # ===== ① 板块效应 4 分（广度 2 + 高度 2）=====
+            # 兜底：行业口径 vs 题材口径（kpl_list.theme）取大者 —— 行业会把主线读丢（低空经济被算成汽车配件）
+            peer, peer_src = ind, '行业'
+            for th in THEME_OF.get(code, []):
+                tn = THEME_CNT.get(th, 0)
+                if tn > peer:
+                    peer, peer_src = tn, '题材:%s' % th
+            if 5 <= peer <= 10:
+                sc += 2; why.append('板块%d家(%s)' % (peer, peer_src))
+            elif 3 <= peer <= 4:
+                sc += 1; why.append('板块%d家(%s,偏散)' % (peer, peer_src))
+            elif peer > 10:
+                sc += 1; why.append('板块%d家(%s,拥挤)' % (peer, peer_src))
             else:
-                sc -= 2; why.append('额仅%.1f亿' % amt)
-            if ind >= 5:
-                sc += 2; why.append('同行业涨停%d家' % ind)
-            elif ind >= 3:
-                sc += 1; why.append('同行业涨停%d家' % ind)
+                why.append('板块仅%d家' % peer)
+            hi = ind_max.get(r['industry'], 1)
+            for th in THEME_OF.get(code, []):
+                hi = max(hi, THEME_MAX.get(th, 1))
+            if hi >= 2:
+                sc += 2; why.append('板块最高%d板' % hi)
             else:
-                why.append('板块仅%d家' % ind)
+                why.append('板块无高度')
+
+            # ===== ② 竞价量占昨全天 3 分（倒 U：8-20% 最优）=====
             if vp == vp and VOL_OK:
-                if vp >= 15:
-                    sc += 2; why.append('竞价占昨全天%.0f%%' % vp)
-                elif vp >= 8:
-                    sc += 1; why.append('竞价占昨全天%.0f%%' % vp)
+                if 8 <= vp <= 20:
+                    sc += 3; why.append('竞昨比%.0f%%' % vp)
+                elif 3 <= vp < 8:
+                    sc += 2; why.append('竞昨比%.0f%%' % vp)
+                elif vp <= 35:
+                    sc += 1; why.append('竞昨比%.0f%%偏高' % vp)
                 else:
-                    why.append('竞价缩量%.0f%%' % vp)
-            if 0 <= gap <= 6:
-                sc += 1; why.append('高开%+.1f%%' % gap)
-            elif gap > 7:
-                sc -= 3; why.append('高开%+.1f%%＞7%%不追' % gap)
-            elif gap > 6:
-                sc -= 1; why.append('高开%+.1f%%偏高' % gap)
+                    why.append('竞昨比%.0f%%过热' % vp)
+
+            # ===== ③ 昨日首板量比 2 分 =====
+            if ratio is None:
+                why.append('量比未取到')
+            elif ratio >= 7:
+                sc += 1; why.append('%s%.1fx异常' % (tag, ratio))
+            elif ratio >= 3:
+                sc += 2; why.append('%s%.1fx' % (tag, ratio))
+            elif ratio >= 2:
+                sc += 1; why.append('%s%.1fx' % (tag, ratio))
             else:
-                sc -= 2; why.append('高开%+.1f%%低开不做' % gap)
+                why.append('%s%.1fx(1.8-2 偏弱)' % (tag, ratio))
+
+            # ===== ④ 封板质量 1 分 =====
             if fd < 10 and tover >= 10:
-                sc += 1; why.append('薄封单+换手%.0f%%' % tover)
-            if ft <= 103000:
-                sc += 1; why.append('首封%02d:%02d' % (ft // 10000, ft % 10000 // 100))
-            tier = 'A' if sc >= 6 else ('B' if sc >= 4 else 'C')
+                sc += 1; why.append('封单%.0f%%+换手%.0f%%' % (fd, tover))
+
+            # ===== 扣分项 =====
+            if gap > 7:
+                sc -= 2; why.append('高开%+.1f%%>7%%扣2' % gap)
+            elif gap > 6:
+                sc -= 1; why.append('高开%+.1f%%偏高扣1' % gap)
+            elif gap < 0:
+                sc -= 2; why.append('低开%+.1f%%扣2' % gap)
+            if share == share and share < 0.01:
+                sc -= 1; why.append('占全市场%.3f%%偏低' % share)
+            if ft > 0:
+                why.append('首封%02d:%02d（不计分）' % (ft // 10000, ft % 10000 // 100))
+            sc = max(sc, 0)
+            tier = 'A' if sc >= 8 else ('B' if sc >= 5 else 'C')
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
@@ -450,8 +576,11 @@ def main():
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
                 p("[%s %d分] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
                   % (tier, sc, name, code, gap, amt, fd, tover, ' / '.join(why)))
+            if n_gate[0] or n_low_vr[0] or n_low_vp[0]:
+                p('硬门槛剔除：首板额<1亿 %d 只 ｜ 量比<1.8 %d 只 ｜ 竞昨比<2%% %d 只'
+                  % (n_gate[0], n_low_vr[0], n_low_vp[0]))
             nA = sum(1 for c in cand2 if c[0] == 'A'); nB = sum(1 for c in cand2 if c[0] == 'B')
-            p("合计：A 档 %d 只（可买，需 9:35 量能二次确认：开盘5分钟成交 ≥ 昨日全天8%%）｜B 档 %d 只（半仓/观察）｜其余 C 档不做" % (nA, nB))
+            p("合计（满分 10）：A 档 ≥8 分 %d 只（可买，需 9:35 量能二次确认）｜B 档 5-7 分 %d 只（半仓/观察）｜其余 C 档不做" % (nA, nB))
 
     # 板块竞价强度：昨日涨停股按题材分组，看今日竞价中位
     if not K.empty and not U.empty:
@@ -588,6 +717,7 @@ def main():
     try:
         if VOL_OK:
             snap = qi[['amount']].copy()
+            snap.insert(0, 'code', snap.index)   # 写 code 列：读侧要 set_index('code')，缺列会静默 KeyError
             snap['ts'] = snap_ts
             sp = os.path.expanduser('~/.hermes/cache/f2s_rank/snap_925_%s.pkl' % datetime.datetime.now().strftime('%Y%m%d'))
             os.makedirs(os.path.dirname(sp), exist_ok=True)

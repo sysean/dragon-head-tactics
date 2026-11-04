@@ -122,10 +122,13 @@ def main():
         fp = os.path.expanduser(f'~/.hermes/cache/f2s_rank/{f}')
         if os.path.exists(fp):
             try:
-                base = pd.read_pickle(fp).set_index('code')['amount']
+                dfr = pd.read_pickle(fp)
+                # 兼容两种存档形状：带 code 列（新）/ code 作索引（旧）
+                base = (dfr.set_index('code') if 'code' in dfr.columns else dfr)['amount']
                 label = lab
                 break
-            except Exception:
+            except Exception as _e:
+                p(f"⚠ {f} 读取失败（{_e}），改用下一档基线")
                 base = None
     if base is not None:
         p(f"量能口径：{label}，存档 {len(base)} 只")
@@ -179,7 +182,7 @@ def main():
         elif gap > 6: sc -= 1; why.append(f'高开{gap:+.1f}%偏高')
         else: sc -= 2; why.append(f'高开{gap:+.1f}%低开')
         if fd < 10 and tover >= 10: sc += 1; why.append(f'薄封单{fd:.1f}%+换手{tover:.0f}%')
-        if ft <= 103000: sc += 1; why.append(f'首封{ft//10000:02d}:{ft%10000//100:02d}')
+        if ft > 0: why.append(f'首封{ft//10000:02d}:{ft%10000//100:02d}(不计分)')
         if vol5 == vol5:
             if vol5 >= a.min_amt: sc += 2; why.append(f'<量能{vol5:.0f}%✓>')
             elif vol5 >= 8: sc += 1; why.append(f'量能{vol5:.0f}%偏弱')
