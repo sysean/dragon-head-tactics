@@ -666,7 +666,7 @@ def main():
             sc = max(sc, 0)
             if struct >= 5 and sc >= 8:
                 tier = 'A'
-            elif struct >= 3 and sc >= 5:
+            elif struct >= 4 and sc >= 5:
                 tier = 'B'
             else:
                 tier = 'C'
@@ -702,7 +702,7 @@ def main():
                 p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
                   % (n_gate[0], n_low_vp[0]))
             nA = sum(1 for c in cand2 if c[0] == 'A'); nB = sum(1 for c in cand2 if c[0] == 'B')
-            p("合计：A 档 %d 只（结构满 5 且 ≥8 分，需 9:35 量能二次确认：开盘 5 分钟成交（不含竞价）≥ 首板全天 10%%）｜B 档 %d 只（结构 ≥3 且 5-7 分，半仓/观察）｜其余 C 档不做" % (nA, nB))
+            p("合计：A 档 %d 只（结构满 5 且 ≥8 分，需 9:35 量能二次确认：开盘 5 分钟成交（不含竞价）≥ 首板全天 10%%）｜B 档 %d 只（结构 ≥4 且 5-7 分，半仓/观察）｜其余 C 档不做" % (nA, nB))
 
     # 板块竞价强度：昨日涨停股按题材分组，看今日竞价中位
     if not K.empty and not U.empty:
