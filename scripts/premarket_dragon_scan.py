@@ -538,6 +538,7 @@ def main():
         cand2 = []
         n_gate = [0]          # 首板额 <1 亿被排除
         n_low_vp = [0]        # 竞昨比 <2% 被排除
+        BD = {}               # code -> 分项得分
         for _, r in first.iterrows():
             code = r['ts_code']
             if code not in qi.index:
@@ -561,6 +562,8 @@ def main():
             ft = int(str(r['first_time']).zfill(6)) if str(r['first_time']).isdigit() else 235959
             tover = float(r['turnover_ratio'] or 0)
             sc, why = 0, []
+            # 分项得分（推票时必须逐项列出，sean_yang 2026-11-05 定）
+            p_main = p_hi = p_vp = p_vr = p_fd = p_pen = 0
             # 量能口径：优先官方量比，退化用「首板额 ÷ 前 5 日均额」（不用 20 日）
             vr_c, adv5_c = ART.get(code, (None, None))
             share = (amt / MKT_YI * 100) if (MKT_YI == MKT_YI and MKT_YI > 0) else float('nan')
@@ -587,12 +590,12 @@ def main():
             share_ind = (peer / _lu_tot * 100) if _lu_tot else 0.0
             if share_ind >= 10:
                 if peer >= 5:
-                    sc += 3; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
+                    p_main = 3; sc += 3; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
                 else:
-                    sc += 1; why.append('板块%d家占%.0f%%(%s,家数少)' % (peer, share_ind, peer_src))
+                    p_main = 1; sc += 1; why.append('板块%d家占%.0f%%(%s,家数少)' % (peer, share_ind, peer_src))
             elif share_ind >= 5:
                 if peer >= 5:
-                    sc += 1; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
+                    p_main = 1; sc += 1; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
                 else:
                     why.append('板块%d家占%.0f%%(%s,偏散)' % (peer, share_ind, peer_src))
             else:
@@ -601,9 +604,9 @@ def main():
             for th in THEME_OF.get(code, []):
                 hi = max(hi, THEME_MAX.get(th, 1))
             if hi == 2:
-                sc += 2; why.append('板块最高2板')
+                p_hi = 2; sc += 2; why.append('板块最高2板')
             elif hi == 3:
-                sc += 1; why.append('板块最高3板')
+                p_hi = 1; sc += 1; why.append('板块最高3板')
             elif hi >= 4:
                 why.append('板块最高%d板(高度透支)' % hi)
             else:
@@ -612,11 +615,11 @@ def main():
             # ===== ② 竞价量占昨全天 3 分（倒 U：8-20% 最优）=====
             if vp == vp and VOL_OK:
                 if 8 <= vp <= 20:
-                    sc += 3; why.append('竞昨比%.0f%%' % vp)
+                    p_vp = 3; sc += 3; why.append('竞昨比%.0f%%' % vp)
                 elif 3 <= vp < 8:
-                    sc += 2; why.append('竞昨比%.0f%%' % vp)
+                    p_vp = 2; sc += 2; why.append('竞昨比%.0f%%' % vp)
                 elif vp <= 35:
-                    sc += 1; why.append('竞昨比%.0f%%偏高' % vp)
+                    p_vp = 1; sc += 1; why.append('竞昨比%.0f%%偏高' % vp)
                 else:
                     why.append('竞昨比%.0f%%过热' % vp)
 
@@ -624,17 +627,17 @@ def main():
             if ratio is None:
                 why.append('量比未取到')
             elif ratio >= 7:
-                sc += 1; why.append('%s%.1fx异常' % (tag, ratio))
+                p_vr = 1; sc += 1; why.append('%s%.1fx异常' % (tag, ratio))
             elif ratio >= 3:
-                sc += 2; why.append('%s%.1fx' % (tag, ratio))
+                p_vr = 2; sc += 2; why.append('%s%.1fx' % (tag, ratio))
             elif ratio >= 2:
-                sc += 1; why.append('%s%.1fx' % (tag, ratio))
+                p_vr = 1; sc += 1; why.append('%s%.1fx' % (tag, ratio))
             else:
                 why.append('%s%.1fx(偏弱)' % (tag, ratio))
 
             # ===== ④ 封板质量 1 分 =====
             if fd < 10 and tover >= 10:
-                sc += 1; why.append('封单%.0f%%+换手%.0f%%' % (fd, tover))
+                p_fd = 1; sc += 1; why.append('封单%.0f%%+换手%.0f%%' % (fd, tover))
 
             # ===== 竞价官方字段：只显示不计分（实测对次日收益无稳定贡献，见 SKILL §4.6）=====
             _at = q0['au_tover'] if 'au_tover' in qi.columns else float('nan')
@@ -644,17 +647,18 @@ def main():
 
             # ===== 扣分项 =====
             if gap > 7:
-                sc -= 2; why.append('高开%+.1f%%>7%%扣2' % gap)
+                p_pen -= 2; sc -= 2; why.append('高开%+.1f%%>7%%扣2' % gap)
             elif gap > 6:
-                sc -= 1; why.append('高开%+.1f%%偏高扣1' % gap)
+                p_pen -= 1; sc -= 1; why.append('高开%+.1f%%偏高扣1' % gap)
             elif gap < 0:
-                sc -= 2; why.append('低开%+.1f%%扣2' % gap)
+                p_pen -= 2; sc -= 2; why.append('低开%+.1f%%扣2' % gap)
             if share == share and share < 0.01:
-                sc -= 1; why.append('占全市场%.3f%%偏低' % share)
+                p_pen -= 1; sc -= 1; why.append('占全市场%.3f%%偏低' % share)
             if ft > 0:
                 why.append('首封%02d:%02d（不计分）' % (ft // 10000, ft % 10000 // 100))
             sc = max(sc, 0)
             tier = 'A' if sc >= 8 else ('B' if sc >= 5 else 'C')
+            BD[code] = dict(主线=p_main, 梯队=p_hi, 竞昨比=p_vp, 量比=p_vr, 封板=p_fd, 扣分=p_pen)
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
@@ -662,8 +666,11 @@ def main():
             ranked = sorted(cand2, key=lambda x: (-x[1],
                                                   -(x[9] if (VOL_OK and x[9] == x[9]) else x[5])))
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
-                p("[%s %d分] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
-                  % (tier, sc, name, code, gap, amt, fd, tover, ' / '.join(why)))
+                _b = BD.get(code, {})
+                p("[%s %d分 = 主线%d+梯队%d+竞昨比%d+量比%d+封板%d%+d] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
+                  % (tier, sc, _b.get('主线', 0), _b.get('梯队', 0), _b.get('竞昨比', 0),
+                     _b.get('量比', 0), _b.get('封板', 0), _b.get('扣分', 0),
+                     name, code, gap, amt, fd, tover, ' / '.join(why)))
             if n_gate[0] or n_low_vp[0]:
                 p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
                   % (n_gate[0], n_low_vp[0]))
@@ -829,6 +836,7 @@ def main():
                     rank_rows.append(dict(tier=tier, sc=int(sc), code=code, name=name, gap=float(gap), amt=float(amt),
                                           fd=float(fd), tover=float(tover), ind=int(ind),
                                           vp=(float(vp) if vp == vp else float('nan')), why=list(why),
+                                          bd=BD.get(code, {}),
                                           open=float(q0['open']) if q0.get('open') == q0.get('open') else float('nan'),
                                           pre=float(q0['pre']) if q0['pre'] else float('nan')))
                 pack = dict(trade_date=today, prev=prev, snap_ts=snap_ts, vol_ok=bool(VOL_OK),
