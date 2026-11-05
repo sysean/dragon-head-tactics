@@ -573,26 +573,39 @@ def main():
             if vp == vp and VOL_OK and vp < 2:
                 n_low_vp[0] += 1; continue                    # 竞价量占昨全天 <2%
 
-            # ===== ① 板块效应 4 分（广度 2 + 高度 2）=====
+            # ===== ① 板块效应 4 分（主线性=占全市场比例 2 + 梯队高度 2）=====
             # 兜底：行业口径 vs 题材口径（kpl_list.theme）取大者 —— 行业会把主线读丢（低空经济被算成汽车配件）
             peer, peer_src = ind, '行业'
             for th in THEME_OF.get(code, []):
                 tn = THEME_CNT.get(th, 0)
                 if tn > peer:
                     peer, peer_src = tn, '题材:%s' % th
-            if 5 <= peer <= 10:
-                sc += 2; why.append('板块%d家(%s)' % (peer, peer_src))
-            elif 3 <= peer <= 4:
-                sc += 1; why.append('板块%d家(%s,偏散)' % (peer, peer_src))
-            elif peer > 10:
-                sc += 1; why.append('板块%d家(%s,拥挤)' % (peer, peer_src))
+            # 主线性：改看「该板块涨停数占全市场涨停数的比例」，绝对家数不再单独给分
+            # （2026-11-05 回测 2077 笔首板：家数分档不单调，2 分档 37.2%/-1.22 反而差于 1 分档 45.6%/-0.17；
+            #   占比≥10% 且家数≥5 的 164 笔 48.8%/+0.54%，是唯一稳定的正期望切片）
+            _lu_tot = len(U2) if len(U2) else 0
+            share_ind = (peer / _lu_tot * 100) if _lu_tot else 0.0
+            if share_ind >= 10:
+                if peer >= 5:
+                    sc += 2; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
+                else:
+                    sc += 1; why.append('板块%d家占%.0f%%(%s,家数少)' % (peer, share_ind, peer_src))
+            elif share_ind >= 5:
+                if peer >= 5:
+                    sc += 1; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
+                else:
+                    why.append('板块%d家占%.0f%%(%s,偏散)' % (peer, share_ind, peer_src))
             else:
-                why.append('板块仅%d家' % peer)
+                why.append('板块%d家占%.0f%%(%s,散)' % (peer, share_ind, peer_src))
             hi = ind_max.get(r['industry'], 1)
             for th in THEME_OF.get(code, []):
                 hi = max(hi, THEME_MAX.get(th, 1))
-            if hi >= 2:
-                sc += 2; why.append('板块最高%d板' % hi)
+            if hi == 2:
+                sc += 2; why.append('板块最高2板')
+            elif hi == 3:
+                sc += 1; why.append('板块最高3板')
+            elif hi >= 4:
+                why.append('板块最高%d板(高度透支)' % hi)
             else:
                 why.append('板块无高度')
 
