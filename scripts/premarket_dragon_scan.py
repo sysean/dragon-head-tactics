@@ -658,7 +658,9 @@ def main():
                 why.append('首封%02d:%02d（不计分）' % (ft // 10000, ft % 10000 // 100))
             sc = max(sc, 0)
             tier = 'A' if sc >= 8 else ('B' if sc >= 5 else 'C')
-            BD[code] = dict(主线=p_main, 梯队=p_hi, 竞昨比=p_vp, 量比=p_vr, 封板=p_fd, 扣分=p_pen)
+            BD[code] = dict(主线=p_main, 梯队=p_hi, 竞昨比=p_vp, 量比=p_vr, 封板=p_fd, 扣分=p_pen,
+                            行业=str(r.get('industry') or ''), 家数=int(peer), 占比=round(share_ind),
+                            最高板=int(hi))
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
@@ -667,10 +669,14 @@ def main():
                                                   -(x[9] if (VOL_OK and x[9] == x[9]) else x[5])))
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
                 _b = BD.get(code, {})
-                p("[%s %d分 = 主线%d+梯队%d+竞昨比%d+量比%d+封板%d%+d] %s %s 高开%+.1f%%｜首板额%.2f亿 封成比%.1f%% 换手%.1f%%｜%s"
-                  % (tier, sc, _b.get('主线', 0), _b.get('梯队', 0), _b.get('竞昨比', 0),
-                     _b.get('量比', 0), _b.get('封板', 0), _b.get('扣分', 0),
-                     name, code, gap, amt, fd, tover, ' / '.join(why)))
+                _hi = _b.get('最高板', 1)
+                p("%s 总分:%d 档位:%s｜主线:%s%d家(%.0f%%) 梯队:%s 竞昨比:%d 量比:%d 封板:%d 扣分:%s｜高开%+.1f%% 首板额%.2f亿 封成比%.1f%% 换手%.1f%%"
+                  % (name, sc, tier, _b.get('行业', ''),
+                     _b.get('家数', 0), _b.get('占比', 0),
+                     ('最高%d板' % _hi) if _hi >= 2 else '无2板',
+                     _b.get('竞昨比', 0), _b.get('量比', 0), _b.get('封板', 0),
+                     ('%+d' % _b.get('扣分', 0)) if _b.get('扣分', 0) else '0',
+                     gap, amt, fd, tover))
             if n_gate[0] or n_low_vp[0]:
                 p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
                   % (n_gate[0], n_low_vp[0]))
