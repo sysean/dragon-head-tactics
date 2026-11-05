@@ -163,7 +163,7 @@ def main():
                 for rr in RK['rows']:
                     pool.append(dict(code=rr['code'], name=rr['name'], sc=int(rr['sc']), why=list(rr['why']),
                                      gap=float(rr['gap']), amt_prev=float(rr['amt']), ind=int(rr['ind'])))
-                src_mode = '9:25 排行榜 rank_925_%s.pkl（快照 %s，满分 11）' % (today, RK.get('snap_ts', '?'))
+                src_mode = '9:25 排行榜 rank_925_%s.pkl（快照 %s）' % (today, RK.get('snap_ts', '?'))
                 p('静态分来源：%s，%d 只；9:25 硬门槛已剔除 首板额<1亿 %d / 竞昨比<2%% %d'
                   % (src_mode, len(pool), RK.get('n_gate', 0), RK.get('n_low_vp', 0)))
             else:
