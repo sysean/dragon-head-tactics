@@ -539,6 +539,7 @@ def main():
         n_gate = [0]          # 首板额 <1 亿被排除
         n_low_vp = [0]        # 竞昨比 <2% 被排除
         BD = {}               # code -> 分项得分
+        BD_STRUCT = {}
         for _, r in first.iterrows():
             code = r['ts_code']
             if code not in qi.index:
@@ -596,7 +597,7 @@ def main():
                     p_main = 1; sc += 1; why.append('板块%d家占%.0f%%(%s,家数少)' % (peer, share_ind, peer_src))
             elif share_ind >= 5:
                 if peer >= 5:
-                    p_main = 1; sc += 1; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
+                    p_main = 2; sc += 2; why.append('板块%d家占%.0f%%(%s)' % (peer, share_ind, peer_src))
                 else:
                     why.append('板块%d家占%.0f%%(%s,偏散)' % (peer, share_ind, peer_src))
             else:
@@ -657,14 +658,26 @@ def main():
                 p_pen -= 1; sc -= 1; PEN.append('占全市场%.3f%%（<0.01%%扣1）' % share); why.append('占全市场%.3f%%偏低' % share)
             if ft > 0:
                 why.append('首封%02d:%02d（不计分）' % (ft // 10000, ft % 10000 // 100))
+            # 结构（主线+梯队）是门槛，量能只是放大器（sean_yang 2026-11-05 定）
+            struct = p_main + p_hi
+            energy = p_vp + p_vr + p_fd
+            if struct <= 2 and energy > 2:
+                p_pen -= (energy - 2)      # 结构弱时量能封顶 2 分，不许靠量能补结构
             sc = max(sc, 0)
-            tier = 'A' if sc >= 8 else ('B' if sc >= 5 else 'C')
+            if struct >= 5 and sc >= 8:
+                tier = 'A'
+            elif struct >= 3 and sc >= 5:
+                tier = 'B'
+            else:
+                tier = 'C'
+            BD_STRUCT[code] = (struct, energy)
             BD[code] = dict(主线=p_main, 梯队=p_hi, 竞昨比=p_vp, 量比=p_vr, 封板=p_fd, 扣分=p_pen,
                             行业=str(r.get('industry') or ''), 家数=int(peer), 占比=round(share_ind),
                             最高板=int(hi),
                             竞昨比值=(float(vp) if vp == vp else None), 量比值=ratio, 量比标签=tag,
                             封成比=round(float(fd), 1), 换手=round(float(tover), 1),
-                            扣分说明=('；'.join(PEN) if PEN else '无'))
+                            扣分说明=('；'.join(PEN) if PEN else '无'),
+                            结构=(p_main + p_hi), 量能=(p_vp + p_vr + p_fd))
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
@@ -689,7 +702,7 @@ def main():
                 p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
                   % (n_gate[0], n_low_vp[0]))
             nA = sum(1 for c in cand2 if c[0] == 'A'); nB = sum(1 for c in cand2 if c[0] == 'B')
-            p("合计：A 档 ≥8 分 %d 只（可买，需 9:35 量能二次确认：开盘 5 分钟成交（不含竞价）≥ 首板全天 10%%）｜B 档 5-7 分 %d 只（半仓/观察）｜其余 C 档不做" % (nA, nB))
+            p("合计：A 档 %d 只（结构满 5 且 ≥8 分，需 9:35 量能二次确认：开盘 5 分钟成交（不含竞价）≥ 首板全天 10%%）｜B 档 %d 只（结构 ≥3 且 5-7 分，半仓/观察）｜其余 C 档不做" % (nA, nB))
 
     # 板块竞价强度：昨日涨停股按题材分组，看今日竞价中位
     if not K.empty and not U.empty:
