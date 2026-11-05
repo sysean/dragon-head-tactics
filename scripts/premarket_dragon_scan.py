@@ -564,6 +564,7 @@ def main():
             sc, why = 0, []
             # 分项得分（推票时必须逐项列出，sean_yang 2026-11-05 定）
             p_main = p_hi = p_vp = p_vr = p_fd = p_pen = 0
+            PEN = []
             # 量能口径：优先官方量比，退化用「首板额 ÷ 前 5 日均额」（不用 20 日）
             vr_c, adv5_c = ART.get(code, (None, None))
             share = (amt / MKT_YI * 100) if (MKT_YI == MKT_YI and MKT_YI > 0) else float('nan')
@@ -647,20 +648,23 @@ def main():
 
             # ===== 扣分项 =====
             if gap > 7:
-                p_pen -= 2; sc -= 2; why.append('高开%+.1f%%>7%%扣2' % gap)
+                p_pen -= 2; sc -= 2; PEN.append('高开%+.1f%%（>7%%扣2）' % gap); why.append('高开%+.1f%%>7%%扣2' % gap)
             elif gap > 6:
-                p_pen -= 1; sc -= 1; why.append('高开%+.1f%%偏高扣1' % gap)
+                p_pen -= 1; sc -= 1; PEN.append('高开%+.1f%%（6-7%%扣1）' % gap); why.append('高开%+.1f%%偏高扣1' % gap)
             elif gap < 0:
-                p_pen -= 2; sc -= 2; why.append('低开%+.1f%%扣2' % gap)
+                p_pen -= 2; sc -= 2; PEN.append('低开%+.1f%%（扣2）' % gap); why.append('低开%+.1f%%扣2' % gap)
             if share == share and share < 0.01:
-                p_pen -= 1; sc -= 1; why.append('占全市场%.3f%%偏低' % share)
+                p_pen -= 1; sc -= 1; PEN.append('占全市场%.3f%%（<0.01%%扣1）' % share); why.append('占全市场%.3f%%偏低' % share)
             if ft > 0:
                 why.append('首封%02d:%02d（不计分）' % (ft // 10000, ft % 10000 // 100))
             sc = max(sc, 0)
             tier = 'A' if sc >= 8 else ('B' if sc >= 5 else 'C')
             BD[code] = dict(主线=p_main, 梯队=p_hi, 竞昨比=p_vp, 量比=p_vr, 封板=p_fd, 扣分=p_pen,
                             行业=str(r.get('industry') or ''), 家数=int(peer), 占比=round(share_ind),
-                            最高板=int(hi))
+                            最高板=int(hi),
+                            竞昨比值=(float(vp) if vp == vp else None), 量比值=ratio, 量比标签=tag,
+                            封成比=round(float(fd), 1), 换手=round(float(tover), 1),
+                            扣分说明=('；'.join(PEN) if PEN else '无'))
             cand2.append((tier, sc, code, r['name'], gap, amt, fd, tover, ind, vp, why))
         if cand2:
             p("\n-- 一进二候选（昨日首板 ∩ 今日非一字，按优先级排序）--")
@@ -670,13 +674,17 @@ def main():
             for tier, sc, code, name, gap, amt, fd, tover, ind, vp, why in ranked[:6]:
                 _b = BD.get(code, {})
                 _hi = _b.get('最高板', 1)
-                p("%s 总分:%d 档位:%s｜主线:%s%d家(%.0f%%) 梯队:%s 竞昨比:%d 量比:%d 封板:%d 扣分:%s｜高开%+.1f%% 首板额%.2f亿 封成比%.1f%% 换手%.1f%%"
+                _vpv = _b.get('竞昨比值')
+                _vrv = _b.get('量比值')
+                p("%s 总分:%d 档位:%s｜主线:%s%d家(%.0f%%) 梯队:%s 竞昨比:%s 量比:%s 封板:封单%.1f%%+换手%.1f%% 扣分:%s｜高开%+.1f%% 首板额%.2f亿"
                   % (name, sc, tier, _b.get('行业', ''),
                      _b.get('家数', 0), _b.get('占比', 0),
                      ('最高%d板' % _hi) if _hi >= 2 else '无2板',
-                     _b.get('竞昨比', 0), _b.get('量比', 0), _b.get('封板', 0),
-                     ('%+d' % _b.get('扣分', 0)) if _b.get('扣分', 0) else '0',
-                     gap, amt, fd, tover))
+                     ('%.0f%%' % _vpv) if _vpv is not None else '未取到',
+                     ('%.1fx%s' % (_vrv, '' if _b.get('量比标签', '量比') == '量比' else '(5日均额算)')) if _vrv else '未取到',
+                     _b.get('封成比', 0), _b.get('换手', 0),
+                     _b.get('扣分说明', '无'),
+                     gap, amt))
             if n_gate[0] or n_low_vp[0]:
                 p('硬门槛剔除：首板额<1亿 %d 只 ｜ 竞昨比<2%% %d 只'
                   % (n_gate[0], n_low_vp[0]))
